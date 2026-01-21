@@ -1,0 +1,15 @@
+[package]
+name = "high_perf_env"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "high_perf_env"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module"] }
+numpy = "0.23"
+rayon = "1.10"
+rand = "0.8"
+thiserror = "2.0"
