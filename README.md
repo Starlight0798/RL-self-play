@@ -1,169 +1,244 @@
-这份文档重点强调了 **Rust 环境的通用性（基于 Trait 设计）**、**观测空间的对称性转化** 以及 **标准 PPO 算法** 的实现要求。
+# RL Self-Play
 
----
+基于 Rust + Python 的高性能对称自博弈强化学习框架。
 
-# 项目开发文档：基于 Rust (Generic) 与 Python 的对称自博弈 RL 环境
+## 特性
 
-## 1. 项目概述
+- **高性能**: Rust 实现的向量化环境，使用 Rayon 并行处理
+- **对称自博弈**: 单一神经网络同时控制双方玩家
+- **动作掩码**: 环境端计算合法动作，保证策略有效性
+- **战术深度**: 12x12 地图，13种动作，多样化地形和道具系统
 
-本项目旨在构建一个高性能、可扩展的强化学习环境框架。
-核心需求如下：
+## 快速开始
 
-1. **通用性 (Genericity)**：Rust 环境端需通过 Trait（特征）定义接口，允许未来轻松扩展新的游戏场景（如从 GridWorld 切换到连续空间对抗），而无需重写底层通信逻辑。
-2. **对称性 (Symmetry)**：实现“相对视角”的观测转换。无论当前是 Player 1 还是 Player 2，输入给神经网络的观测数据（Observation）在语义上必须一致（例如永远是“我方在前，敌方在后”）。这使得同一个神经网络权重可以同时控制双方。
-3. **极速交互**: 使用 Rust (2024 Edition) + Rayon 实现 CPU 端的环境大规模向量化（Vectorization）。
-4. **算法**: 使用 Python 实现标准 PPO 算法，配合 Action Masking 进行 Self-Play 训练。
+### 环境要求
 
-## 2. 技术栈
+- Python 3.10+
+- Rust (Edition 2021)
+- maturin
 
-* **Rust**: Edition 2024。依赖：`pyo3`, `numpy` (Rust binding), `rayon`, `rand`, `thiserror`.
-* **Python**: 3.10+。依赖：`torch`, `numpy`.
-* **构建**: `maturin`。
+### 安装
 
-## 3. 模块一：Rust 通用环境层 (`src/lib.rs`)
+```bash
+# 创建虚拟环境
+python -m venv .venv
+source .venv/bin/activate  # Linux/macOS
+# .venv\Scripts\activate   # Windows
 
-### 3.1 核心设计：`GameEnv` Trait
+# 安装依赖
+pip install maturin torch numpy
 
-为了保证通过性，不要直接把游戏逻辑写死在 Python 接口类里。请定义一个 Trait，所有具体的游戏逻辑都实现这个 Trait。
+# 构建 Rust 环境
+maturin develop --release
+```
+
+### 运行训练
+
+```bash
+python train.py
+```
+
+训练过程中会输出：
+- 每 10 次更新显示 FPS、胜率、伤害统计
+- 每 25 次更新在 `replays/` 目录生成回放文件
+- `Ctrl+C` 中断保存 `ppo_interrupted.pth`
+- 训练完成保存 `ppo_final.pth`
+
+### 观看对战
+
+使用 `watch.py` 在终端实时观看对战动画：
+
+```bash
+# PPO vs PPO 对战 (使用当前训练中的模型)
+python watch.py
+
+# PPO vs 规则智能体
+python watch.py --p2 rule
+
+# 加载已保存的模型
+python watch.py --model ppo_final.pth
+
+# 调整播放速度 (默认 0.3 秒/帧)
+python watch.py --delay 0.5
+
+# 规则智能体 vs 规则智能体
+python watch.py --p1 rule --p2 rule
+```
+
+回放文件会显示对战双方的类型（PPO 模型 / Rule-Based）和模型版本信息。
+
+## 游戏规则
+
+### SimpleDuel - 12x12 战术对战
+
+两名玩家在 12x12 的战术地图上对战，通过攻击、防御和资源管理击败对手。
+
+#### 基础属性
+
+| 属性 | 最大值 | 说明 |
+|------|--------|------|
+| 生命值 (HP) | 4 | 降至 0 则失败 |
+| 能量 (Energy) | 7 | 执行动作消耗，每回合恢复 1 |
+| 护盾 (Shield) | 2 | 吸收伤害 |
+| 弹药 (Ammo) | 6 | 远程射击消耗 |
+
+#### 动作空间
+
+| 动作 | 能量 | 说明 |
+|------|------|------|
+| Stay | 0 | 原地不动 |
+| Move (4方向) | 1 | 移动一格（水域 +1） |
+| Attack | 2 | 近战攻击（范围 1） |
+| Shoot | 3 | 远程射击（范围 4，消耗 1 弹药） |
+| Dodge | 2 | 下回合免疫一次攻击 |
+| Shield | 3 | 获得 1 层护盾 |
+| Dash | 3 | 向远离敌人方向移动 2 格 |
+| AOE | 4 | 对周围 1 格内敌人造成伤害 |
+| Heal | 4 | 恢复 1 HP（5 步冷却） |
+| Reload | 0 | 恢复 3 发弹药 |
+
+#### 地形系统
+
+| 地形 | 效果 |
+|------|------|
+| 空地 | 正常通行 |
+| 墙体 | 不可通过，阻挡视线 |
+| 水域 | 移动 +1 能量，阻挡远程攻击 |
+| 高地 | 射击范围 +1，被远程攻击 50% 闪避 |
+
+#### 道具系统
+
+地图对称放置道具点，被拾取后 10 步刷新：
+
+- 血包: +1 HP
+- 能量球: +3 能量
+- 弹药箱: +2 弹药
+- 护盾: +1 层护盾
+
+#### 游戏流程
+
+- 最大回合数: 60
+- 第 40 回合后进入突然死亡阶段（停止能量恢复）
+- 胜利条件: 对手 HP 降至 0，或回合结束时 HP 更高
+
+## 架构
+
+```
+┌─────────────────────────────────────────────────────┐
+│                    Python Layer                      │
+│  ┌─────────┐  ┌─────────┐  ┌──────────────────────┐ │
+│  │ train.py│  │ model.py│  │ algorithms/ppo.py    │ │
+│  └────┬────┘  └────┬────┘  └──────────┬───────────┘ │
+│       │            │                   │             │
+│       └────────────┼───────────────────┘             │
+│                    ▼                                 │
+│         ┌──────────────────┐                        │
+│         │  VectorizedEnv   │  (PyO3 Binding)        │
+│         └────────┬─────────┘                        │
+└──────────────────┼──────────────────────────────────┘
+                   ▼
+┌─────────────────────────────────────────────────────┐
+│                    Rust Layer                        │
+│  ┌──────────────────────────────────────────────┐   │
+│  │              src/lib.rs                       │   │
+│  │  ┌────────────┐  ┌─────────────────────────┐ │   │
+│  │  │ GameEnv    │  │ SimpleDuel              │ │   │
+│  │  │  (Trait)   │  │  - 12x12 战术地图        │ │   │
+│  │  └────────────┘  │  - 13 种动作            │ │   │
+│  │                  │  - 地形/道具系统         │ │   │
+│  │                  └─────────────────────────┘ │   │
+│  │  ┌────────────────────────────────────────┐  │   │
+│  │  │ Rayon 并行处理 N 个环境实例             │  │   │
+│  │  └────────────────────────────────────────┘  │   │
+│  └──────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────┘
+```
+
+### 核心设计：对称变换
+
+两个玩家共享同一个神经网络，通过观测变换实现：
+
+```
+P1 视角 (物理坐标):          P2 视角 (变换后):
+  ┌───────────┐               ┌───────────┐
+  │ P1    P2  │    180° 旋转   │ P2'   P1' │
+  │  ●     ○  │  ──────────▶  │  ●     ○  │
+  │           │               │           │
+  └───────────┘               └───────────┘
+  "我在左下"                   "我在左下"
+```
+
+- 坐标翻转: `(x, y) → (MAP_SIZE-1-x, MAP_SIZE-1-y)`
+- 方向动作翻转: 上↔下, 左↔右
+- 非方向动作保持不变
+
+### 数据流
+
+```
+1. env.reset() → [32, 160] 观测 (16环境 × 2玩家)
+2. model.forward(obs, mask) → [32] 动作
+3. 拆分: actions_p1 = actions[:16], actions_p2 = actions[16:]
+4. env.step(actions_p1, actions_p2) → 新观测、奖励、结束标志
+5. 存储转移数据
+6. 每 2048 步: PPO 更新
+7. 重复至 1000 万步
+```
+
+## 项目结构
+
+```
+RL-self-play/
+├── src/
+│   └── lib.rs          # Rust 环境实现
+├── algorithms/
+│   ├── base.py         # 算法基类
+│   └── ppo.py          # PPO 算法
+├── agents/
+│   └── rule_based.py   # 规则智能体
+├── model.py            # 神经网络模型
+├── train.py            # 训练入口
+├── watch.py            # 观看对战回放
+├── config.py           # 训练配置
+├── utils.py            # 工具函数
+├── Cargo.toml          # Rust 依赖
+├── CLAUDE.md           # Claude Code 指导
+└── README.md           # 本文件
+```
+
+## 训练参数
+
+| 参数 | 值 | 说明 |
+|------|------|------|
+| total_timesteps | 10,000,000 | 总训练步数 |
+| num_envs | 16 | 并行环境数 |
+| num_steps | 2048 | 每次 rollout 步数 |
+| batch_size | 65,536 | PPO 批次大小 |
+| learning_rate | 1e-4 | 学习率 |
+| entropy_coef | 0.02 | 熵正则化系数 |
+| gamma | 0.99 | 折扣因子 |
+| gae_lambda | 0.95 | GAE 参数 |
+
+## 扩展
+
+### 添加新游戏
+
+实现 `GameEnv` trait：
 
 ```rust
 pub trait GameEnv: Send + Sync + Clone {
-    type Action;
-    type Obs;
-    
-    // 创建新游戏
     fn new() -> Self;
-    
-    // 重置游戏，返回 (P1_Obs, P2_Obs, P1_Mask, P2_Mask)
-    fn reset(&mut self) -> (Self::Obs, Self::Obs, Vec<f32>, Vec<f32>);
-    
-    // 执行一步，接收双方动作
-    // 返回 (P1_Obs, P2_Obs, P1_Reward, P2_Reward, Done, P1_Mask, P2_Mask)
-    fn step(&mut self, action_p1: Self::Action, action_p2: Self::Action) 
-        -> (Self::Obs, Self::Obs, f32, f32, bool, Vec<f32>, Vec<f32>);
-        
-    // 获取观测数据的维度（用于 Python 初始化 tensor）
+    fn reset(&mut self) -> (obs_p1, obs_p2, mask_p1, mask_p2);
+    fn step(&mut self, action_p1, action_p2) -> (obs, rewards, done, masks, info);
     fn obs_dim() -> usize;
-    
-    // 获取动作空间大小
     fn action_dim() -> usize;
 }
-
 ```
 
-### 3.2 具体实现：`SimpleDuel` 场景
+关键要求：
+1. 观测必须对称（P2 视角需要变换）
+2. 动作掩码在 Rust 端计算
+3. 奖励设计为零和
 
-实现上述 Trait 的一个具体例子：简化的对抗游戏。
+## 许可证
 
-* **状态**: 2D 网格 ()，包含 P1 和 P2 的位置、HP。
-* **对称观测 (Canonical Observation)**:
-* **关键点**: 不要返回绝对坐标。
-* 对于 P1，返回 `[My_X, My_Y, Enemy_X, Enemy_Y, My_HP, Enemy_HP]`。
-* 对于 P2，返回 `[My_X, My_Y, Enemy_X, Enemy_Y, My_HP, Enemy_HP]`（这里的 My 是 P2 自己，Enemy 是 P1）。
-* **坐标系转换**: 建议将 P2 的视角进行物理翻转（例如 P1 视角看地图是左下原点，P2 视角看地图是右上原点），或者仅使用相对坐标（dx, dy），确保网络学到的是通用的“博弈策略”而非“地图死记硬背”。
-
-
-* **动作空间 (Discrete)**:
-* [停, 上, 下, 左, 右, 攻击] (6个离散动作)。
-
-
-* **Action Mask**:
-* 移动到边界/障碍物 = 非法。
-* 攻击 CD 未好 = 非法。
-
-
-
-### 3.3 向量化包装器 (`VectorizedEnv`)
-
-这是一个暴露给 Python 的 PyClass。
-
-* 内部持有 `Vec<Box<dyn GameEnv>>` 或具体泛型 `Vec<SimpleDuel>`。
-* 利用 `rayon::par_iter` 并行处理 `step`。
-* **数据布局**:
-* Python 调用 `step(actions_p1_batch, actions_p2_batch)`。
-* Rust 并行更新 N 个环境。
-* Rust 将结果拼接成 Numpy 数组返回 Python。建议返回结构为：
-* `obs_batch`: Shape `[2 * N, Obs_Dim]` (将 P1 和 P2 的观测堆叠，方便统一推理)
-* `reward_batch`: Shape `[2 * N]`
-* `done_batch`: Shape `[N]` (游戏结束是对等的)
-* `mask_batch`: Shape `[2 * N, Action_Dim]`
-
-
-
-
-
-## 4. 模块二：Python 算法层 (`train.py`)
-
-### 4.1 网络架构 (Shared Policy)
-
-由于 Rust 层已经做了**对称性处理**，Python 端只需要一个 Actor-Critic 网络。
-
-* **Input**: `[Batch_Size, Obs_Dim]` (Batch_Size = 2 * Num_Envs)
-* **Process**:
-1. Forward Pass 拿到 Logits。
-2. **Apply Mask**: `Logits[mask == 0] = -1e9`。
-3. Softmax & Sample。
-
-
-* **Output**: Actions `[Batch_Size]`。
-
-### 4.2 训练循环 (Self-Play Logic)
-
-不需要复杂的对手池逻辑，最简单的 Self-Play 即可验证系统。
-
-1. **初始化**:
-* Rust Env 初始化 N 个实例。
-* PPO 模型 `model`。
-
-
-2. **Rollout (采样)**:
-* 从 Env 获取 `obs` (包含 P1 和 P2 的视角，共 2N 个数据)。
-* 模型推理 `actions = model(obs)`。
-* 将 `actions` 拆分为 `act_p1` (前 N 个) 和 `act_p2` (后 N 个) 传回 Rust。
-* 存储 Trajectories。注意：P1 的对手是 P2，P2 的对手是 P1。
-
-
-3. **PPO 更新**:
-* 将收集到的所有数据（P1 的数据 + P2 的数据）混合在一起。
-* 使用标准的 PPO Loss (Clipped Surrogate Objective) 进行更新。
-* 计算 GAE (Generalized Advantage Estimation)。
-* **不需要 Dual-Clip**。
-
-
-
-### 4.3 奖励设计 (Zero-Sum)
-
-* Rust 端返回的奖励应当是零和的，或者近似零和。
-* 例如：P1 击中 P2 -> P1 得 +1 分，P2 得 -1 分。
-* 这样模型会自然学会攻击（为了得分）和躲避（为了避免扣分）。
-
-## 5. 交付文件清单
-
-请编写以下代码文件：
-
-1. **`Cargo.toml`**:
-* 配置 `name = "high_perf_env"`。
-* 配置 `crate-type = ["cdylib"]`。
-* 添加 `pyo3 = { version = "0.20", features = ["extension-module"] }`。
-* 添加 `numpy`, `rayon`, `rand`.
-
-
-2. **`src/lib.rs`**:
-* 定义 `trait GameEnv`。
-* 实现 `struct SimpleDuel` (包含详细的 Action Mask 和 对称 Obs 逻辑)。
-* 实现 `struct PyVectorizedEnv` (处理 Numpy 转换和 Rayon 并行)。
-
-
-3. **`train.py`**:
-* PPO 类 (ActorCritic, Mask 处理)。
-* 主训练循环 (Rollout -> Learn)。
-* 不依赖外部复杂库，纯 PyTorch 实现。
-
-
-
-## 6. 特别注意 (Instructions for Coding)
-
-* **对称性检查**: 在编写 `SimpleDuel::reset` 和 `step` 时，务必确保 `obs_p2` 是基于 P2 视角的“相对坐标”或“翻转坐标”，绝对不能直接返回 P2 的绝对坐标，否则单一网络无法同时学会两边的策略。
-* **Masking**: 在 Rust 端计算 Mask，不要在 Python 端计算，以保证性能。
-* **Rust 2024**: 使用最新的 Rust 语法特性（如有）。
-* **注释**: 关键逻辑（尤其是对称转换部分）请保留中文注释。
+MIT License

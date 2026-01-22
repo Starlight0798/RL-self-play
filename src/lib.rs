@@ -14,43 +14,58 @@ use rand::prelude::*;
 pub trait GameEnv: Send + Sync + Clone {
     // 这里为了简化 Python 交互，我们假定 Action 是 usize (离散)，Obs 是 Vec<f32>
     // 如果需要连续动作，可以改为 Vec<f32>
-    
+
     // 创建新游戏实例
     fn new() -> Self;
-    
+
     // 重置游戏
     // 返回 (Obs_P1, Obs_P2, Mask_P1, Mask_P2)
     // Mask: 1.0 表示合法，0.0 表示非法
     fn reset(&mut self) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>);
-    
+
     // 执行一步
     // 输入: P1 和 P2 的动作
     // 返回: (Obs_P1, Obs_P2, Reward_P1, Reward_P2, Done, Mask_P1, Mask_P2, Info)
     // Info: 统计信息，仅在 Done=true 时有内容，否则为空
-    fn step(&mut self, action_p1: usize, action_p2: usize) 
+    fn step(&mut self, action_p1: usize, action_p2: usize)
         -> (Vec<f32>, Vec<f32>, f32, f32, bool, Vec<f32>, Vec<f32>, HashMap<String, f32>);
-        
+
     fn obs_dim() -> usize;
     fn action_dim() -> usize;
 }
 
 // ============================================================================
-// 2. SimpleDuel 实现
+// 2. SimpleDuel 实现 - 升级版 12x12 战术游戏
 // ============================================================================
 
-const MAP_SIZE: i32 = 8;
-const MAX_HP: i32 = 3;
-const MAX_ENERGY: i32 = 5;
+const MAP_SIZE: i32 = 12;
+const MAX_HP: i32 = 4;
+const MAX_ENERGY: i32 = 7;
+const MAX_SHIELD: i32 = 2;
+const MAX_AMMO: i32 = 6;
 const REGEN_ENERGY: i32 = 1;
 
+// 动作能量消耗
 const COST_MOVE: i32 = 1;
 const COST_ATTACK: i32 = 2;
 const COST_SHOOT: i32 = 3;
+const COST_DODGE: i32 = 2;
+const COST_SHIELD: i32 = 3;
+const COST_DASH: i32 = 3;
+const COST_AOE: i32 = 4;
+const COST_HEAL: i32 = 4;
 
+// 攻击范围
 const ATTACK_RANGE: i32 = 1;
-const SHOOT_RANGE: i32 = 3;
-const MAX_STEPS: i32 = 50;
-const SUDDEN_DEATH_STEP: i32 = 30; // Stop energy regen after this step
+const SHOOT_RANGE: i32 = 4;  // 增加远程射击范围
+const AOE_RANGE: i32 = 1;
+
+// 游戏时间
+const MAX_STEPS: i32 = 60;  // 增加最大步数
+const SUDDEN_DEATH_STEP: i32 = 40; // 突然死亡阶段开始时间
+
+// 冷却时间
+const HEAL_COOLDOWN: i32 = 5;
 
 // 动作定义
 // 0: Stay
@@ -60,6 +75,12 @@ const SUDDEN_DEATH_STEP: i32 = 30; // Stop energy regen after this step
 // 4: Right (x+)
 // 5: Attack (Melee)
 // 6: Shoot (Ranged)
+// 7: Dodge - 2能量，下回合免疫1次攻击
+// 8: Shield - 3能量，获得1层护盾
+// 9: Dash - 3能量，向远离敌人方向移动2格
+// 10: AOE - 4能量，对周围1格内敌人造成伤害
+// 11: Heal - 4能量，恢复1HP（5步冷却）
+// 12: Reload - 0能量，恢复3发弹药
 const ACT_STAY: usize = 0;
 const ACT_UP: usize = 1;
 const ACT_DOWN: usize = 2;
@@ -67,10 +88,35 @@ const ACT_LEFT: usize = 3;
 const ACT_RIGHT: usize = 4;
 const ACT_ATTACK: usize = 5;
 const ACT_SHOOT: usize = 6;
+const ACT_DODGE: usize = 7;
+const ACT_SHIELD: usize = 8;
+const ACT_DASH: usize = 9;
+const ACT_AOE: usize = 10;
+const ACT_HEAL: usize = 11;
+const ACT_RELOAD: usize = 12;
 
-const ACTION_DIM: usize = 7;
-// [mx, my, ex, ey, mhp, ehp, meng, eeng] + [Map Grid 8x8 = 64]
-const OBS_DIM: usize = 8 + 64; 
+const ACTION_DIM: usize = 13;
+// [0-7]: mx, my, ex, ey, mhp, ehp, meng, eeng (归一化)
+// [8-11]: my_shield, enemy_shield, my_ammo, enemy_ammo
+// [12-15]: my_dodge, enemy_dodge, heal_cd, step_progress
+// [16-159]: 12x12 地形网格
+const OBS_DIM: usize = 16 + 144; // = 160
+
+// 地形类型
+const TERRAIN_EMPTY: u8 = 0;
+const TERRAIN_WALL: u8 = 1;
+const TERRAIN_WATER: u8 = 2;
+const TERRAIN_HIGH_GROUND: u8 = 3;
+
+// 道具类型
+const ITEM_NONE: u8 = 0;
+const ITEM_HEALTH: u8 = 1;
+const ITEM_ENERGY: u8 = 2;
+const ITEM_AMMO: u8 = 3;
+const ITEM_SHIELD: u8 = 4;
+
+// 道具刷新时间
+const ITEM_RESPAWN_TIME: i32 = 10;
 
 #[derive(Clone)]
 struct SimpleDuel {
@@ -80,12 +126,24 @@ struct SimpleDuel {
     p2_hp: i32,
     p1_energy: i32,
     p2_energy: i32,
+    p1_shield: i32,
+    p2_shield: i32,
+    p1_ammo: i32,
+    p2_ammo: i32,
+    p1_dodge_active: bool,
+    p2_dodge_active: bool,
+    p1_heal_cooldown: i32,
+    p2_heal_cooldown: i32,
     step_count: i32,
-    walls: Vec<bool>, // Flattened MAP_SIZE*MAP_SIZE grid
+    terrain: Vec<u8>,  // 144格地形
+    items: Vec<u8>,    // 144格道具
+    item_respawn: Vec<i32>, // 道具刷新倒计时
     rng: StdRng,
     // 统计信息
     p1_attacks: i32,
     p2_attacks: i32,
+    p1_damage_dealt: i32,
+    p2_damage_dealt: i32,
 }
 
 impl SimpleDuel {
@@ -94,19 +152,147 @@ impl SimpleDuel {
         pos.0 >= 0 && pos.0 < MAP_SIZE && pos.1 >= 0 && pos.1 < MAP_SIZE
     }
 
+    fn pos_to_idx(pos: (i32, i32)) -> usize {
+        (pos.1 * MAP_SIZE + pos.0) as usize
+    }
+
+    fn idx_to_pos(idx: usize) -> (i32, i32) {
+        let x = (idx as i32) % MAP_SIZE;
+        let y = (idx as i32) / MAP_SIZE;
+        (x, y)
+    }
+
+    fn get_terrain(&self, pos: (i32, i32)) -> u8 {
+        if !Self::is_valid(pos) { return TERRAIN_WALL; }
+        self.terrain[Self::pos_to_idx(pos)]
+    }
+
     fn is_wall(&self, pos: (i32, i32)) -> bool {
-        if !Self::is_valid(pos) { return true; } // Out of bounds is wall-like
-        let idx = (pos.1 * MAP_SIZE + pos.0) as usize;
-        self.walls[idx]
+        self.get_terrain(pos) == TERRAIN_WALL
+    }
+
+    fn is_water(&self, pos: (i32, i32)) -> bool {
+        self.get_terrain(pos) == TERRAIN_WATER
+    }
+
+    fn is_high_ground(&self, pos: (i32, i32)) -> bool {
+        self.get_terrain(pos) == TERRAIN_HIGH_GROUND
+    }
+
+    // 生成对称地形
+    fn generate_terrain(&mut self) {
+        self.terrain.fill(TERRAIN_EMPTY);
+        self.items.fill(ITEM_NONE);
+        self.item_respawn.fill(0);
+
+        // 生成墙体 (6-10个)
+        let num_walls = self.rng.gen_range(6..11);
+        let mut count = 0;
+        while count < num_walls {
+            let wx = self.rng.gen_range(0..MAP_SIZE);
+            let wy = self.rng.gen_range(0..MAP_SIZE);
+            let sym_wx = MAP_SIZE - 1 - wx;
+            let sym_wy = MAP_SIZE - 1 - wy;
+
+            // 不阻挡角落出生区域
+            if (wx + wy) < 4 || (sym_wx + sym_wy) < 4 { continue; }
+            if (wx + wy) > (2 * MAP_SIZE - 5) { continue; }
+
+            let idx1 = Self::pos_to_idx((wx, wy));
+            let idx2 = Self::pos_to_idx((sym_wx, sym_wy));
+
+            if self.terrain[idx1] == TERRAIN_EMPTY {
+                self.terrain[idx1] = TERRAIN_WALL;
+                self.terrain[idx2] = TERRAIN_WALL;
+                count += 1;
+            }
+        }
+
+        // 生成水域 (2-4个)
+        let num_water = self.rng.gen_range(2..5);
+        count = 0;
+        while count < num_water {
+            let wx = self.rng.gen_range(1..MAP_SIZE-1);
+            let wy = self.rng.gen_range(1..MAP_SIZE-1);
+            let sym_wx = MAP_SIZE - 1 - wx;
+            let sym_wy = MAP_SIZE - 1 - wy;
+
+            // 不阻挡角落
+            if (wx + wy) < 4 || (sym_wx + sym_wy) < 4 { continue; }
+
+            let idx1 = Self::pos_to_idx((wx, wy));
+            let idx2 = Self::pos_to_idx((sym_wx, sym_wy));
+
+            if self.terrain[idx1] == TERRAIN_EMPTY {
+                self.terrain[idx1] = TERRAIN_WATER;
+                self.terrain[idx2] = TERRAIN_WATER;
+                count += 1;
+            }
+        }
+
+        // 生成高地 (2-3个)
+        let num_high = self.rng.gen_range(2..4);
+        count = 0;
+        while count < num_high {
+            let hx = self.rng.gen_range(2..MAP_SIZE-2);
+            let hy = self.rng.gen_range(2..MAP_SIZE-2);
+            let sym_hx = MAP_SIZE - 1 - hx;
+            let sym_hy = MAP_SIZE - 1 - hy;
+
+            let idx1 = Self::pos_to_idx((hx, hy));
+            let idx2 = Self::pos_to_idx((sym_hx, sym_hy));
+
+            if self.terrain[idx1] == TERRAIN_EMPTY {
+                self.terrain[idx1] = TERRAIN_HIGH_GROUND;
+                self.terrain[idx2] = TERRAIN_HIGH_GROUND;
+                count += 1;
+            }
+        }
+
+        // 生成道具 (2-3个)
+        let num_items = self.rng.gen_range(2..4);
+        count = 0;
+        while count < num_items {
+            let ix = self.rng.gen_range(2..MAP_SIZE-2);
+            let iy = self.rng.gen_range(2..MAP_SIZE-2);
+            let sym_ix = MAP_SIZE - 1 - ix;
+            let sym_iy = MAP_SIZE - 1 - iy;
+
+            let idx1 = Self::pos_to_idx((ix, iy));
+            let idx2 = Self::pos_to_idx((sym_ix, sym_iy));
+
+            // 不放在墙上或水中
+            if self.terrain[idx1] != TERRAIN_EMPTY && self.terrain[idx1] != TERRAIN_HIGH_GROUND {
+                continue;
+            }
+            if self.items[idx1] != ITEM_NONE { continue; }
+
+            // 随机选择道具类型
+            let item_type = match self.rng.gen_range(0..4) {
+                0 => ITEM_HEALTH,
+                1 => ITEM_ENERGY,
+                2 => ITEM_AMMO,
+                _ => ITEM_SHIELD,
+            };
+
+            self.items[idx1] = item_type;
+            self.items[idx2] = item_type;
+            count += 1;
+        }
     }
 
     // 辅助函数：生成 Observation
-    // is_p2_perspective: 是否生成 P2 的视角（需要翻转）
     fn get_obs(&self, is_p2_perspective: bool) -> Vec<f32> {
-        let (my_pos, enemy_pos, my_hp, enemy_hp, my_eng, enemy_eng) = if is_p2_perspective {
-            (self.p2_pos, self.p1_pos, self.p2_hp, self.p1_hp, self.p2_energy, self.p1_energy)
+        let (my_pos, enemy_pos, my_hp, enemy_hp, my_eng, enemy_eng,
+             my_shield, enemy_shield, my_ammo, enemy_ammo,
+             my_dodge, enemy_dodge, my_heal_cd) = if is_p2_perspective {
+            (self.p2_pos, self.p1_pos, self.p2_hp, self.p1_hp, self.p2_energy, self.p1_energy,
+             self.p2_shield, self.p1_shield, self.p2_ammo, self.p1_ammo,
+             self.p2_dodge_active, self.p1_dodge_active, self.p2_heal_cooldown)
         } else {
-            (self.p1_pos, self.p2_pos, self.p1_hp, self.p2_hp, self.p1_energy, self.p2_energy)
+            (self.p1_pos, self.p2_pos, self.p1_hp, self.p2_hp, self.p1_energy, self.p2_energy,
+             self.p1_shield, self.p2_shield, self.p1_ammo, self.p2_ammo,
+             self.p1_dodge_active, self.p2_dodge_active, self.p1_heal_cooldown)
         };
 
         let (mx, my) = self.transform_pos(my_pos, is_p2_perspective);
@@ -116,8 +302,11 @@ impl SimpleDuel {
         let scale = (MAP_SIZE - 1) as f32;
         let hp_scale = MAX_HP as f32;
         let eng_scale = MAX_ENERGY as f32;
+        let shield_scale = MAX_SHIELD as f32;
+        let ammo_scale = MAX_AMMO as f32;
 
         let mut obs = vec![
+            // [0-7]: 位置和基础属性
             mx as f32 / scale,
             my as f32 / scale,
             ex as f32 / scale,
@@ -126,43 +315,50 @@ impl SimpleDuel {
             enemy_hp as f32 / hp_scale,
             my_eng as f32 / eng_scale,
             enemy_eng as f32 / eng_scale,
+            // [8-11]: 护盾和弹药
+            my_shield as f32 / shield_scale,
+            enemy_shield as f32 / shield_scale,
+            my_ammo as f32 / ammo_scale,
+            enemy_ammo as f32 / ammo_scale,
+            // [12-15]: 闪避、冷却、进度
+            if my_dodge { 1.0 } else { 0.0 },
+            if enemy_dodge { 1.0 } else { 0.0 },
+            my_heal_cd as f32 / HEAL_COOLDOWN as f32,
+            self.step_count as f32 / MAX_STEPS as f32,
         ];
 
-        // Append Wall Grid
-        // Grid should also be transformed for perspective!
-        // If P2 perspective: (x, y) -> (W-1-x, H-1-y)
-        // Original Grid: index = y * W + x
-        // Transformed Grid: for y' in 0..H, for x' in 0..W:
-        //    orig_x = W - 1 - x'
-        //    orig_y = H - 1 - y'
-        //    val = walls[orig_y * W + orig_x]
-        
+        // [16-159]: 12x12 地形网格
+        // 编码: 0=空地, 0.25=墙, 0.5=水域, 0.75=高地, 1.0=道具
+        // 为了更丰富的信息，我们使用多个通道的概念但压缩到单个值
+        // 地形值 + 道具偏移
         for y in 0..MAP_SIZE {
             for x in 0..MAP_SIZE {
-                let (qx, qy) = self.transform_pos((x, y), is_p2_perspective);
-                // qx, qy is the coordinate in the AGENT'S view that corresponds to (x, y) in PHYSICAL view?
-                // No. transform_pos converts PHYSICAL (x,y) to AGENT (ax, ay).
-                // We want to fill the grid in AGENT'S coordinate system order (0..W, 0..H).
-                // So for agent_y in 0..H, agent_x in 0..W:
-                //    phys_x, phys_y = transform_pos_inverse(agent_x, agent_y)
-                //    val = walls[phys_y * W + phys_x]
-                
-                // Since transform is symmetric (invert twice = identity), transform_pos is its own inverse.
                 let (px, py) = self.transform_pos((x, y), is_p2_perspective);
-                
-                let idx = (py * MAP_SIZE + px) as usize;
-                obs.push(if self.walls[idx] { 1.0 } else { 0.0 });
+                let idx = Self::pos_to_idx((px, py));
+
+                let terrain_val = match self.terrain[idx] {
+                    TERRAIN_EMPTY => 0.0,
+                    TERRAIN_WALL => 0.25,
+                    TERRAIN_WATER => 0.5,
+                    TERRAIN_HIGH_GROUND => 0.75,
+                    _ => 0.0,
+                };
+
+                // 如果有道具，添加一个小偏移表示
+                let item_val = if self.items[idx] != ITEM_NONE {
+                    0.1 * (self.items[idx] as f32)
+                } else {
+                    0.0
+                };
+
+                obs.push(terrain_val + item_val);
             }
         }
-        
+
         obs
     }
 
-    // 坐标转换
-    // 如果是 P2 视角，我们进行中心对称翻转（或者理解为旋转180度）
-    // (x, y) -> (W-1-x, H-1-y)
-    // 这样 P2 在 (W-1, H-1) 时，他看到的自己是在 (0, 0)
-    // 从而保证策略的通用性
+    // 坐标转换 - 180度旋转
     fn transform_pos(&self, pos: (i32, i32), invert: bool) -> (i32, i32) {
         if invert {
             (MAP_SIZE - 1 - pos.0, MAP_SIZE - 1 - pos.1)
@@ -172,10 +368,6 @@ impl SimpleDuel {
     }
 
     // 动作转换
-    // 如果是 P2 视角，他输出 "Up" (y+)，在翻转的坐标系里意味着 y 值增加。
-    // 但在物理坐标系 (y_real = H-1 - y_obs) 里，y_obs 增加意味着 y_real 减少。
-    // 所以 P2 的 "Up" 对应物理的 "Down"。
-    // 同理 "Left" (x-) 对应物理的 "Right" (x+)。
     fn transform_action(action: usize, invert: bool) -> usize {
         if !invert {
             return action;
@@ -185,6 +377,7 @@ impl SimpleDuel {
             ACT_DOWN => ACT_UP,
             ACT_LEFT => ACT_RIGHT,
             ACT_RIGHT => ACT_LEFT,
+            // 非方向性动作不变
             _ => action,
         }
     }
@@ -192,39 +385,70 @@ impl SimpleDuel {
     // 获取 Action Mask
     fn get_mask(&self, is_p2_perspective: bool) -> Vec<f32> {
         let mut mask = vec![0.0; ACTION_DIM];
-        
-        let (my_pos_phys, enemy_pos_phys, my_energy) = if is_p2_perspective { 
-            (self.p2_pos, self.p1_pos, self.p2_energy) 
-        } else { 
-            (self.p1_pos, self.p2_pos, self.p1_energy) 
+
+        let (my_pos_phys, enemy_pos_phys, my_energy, my_hp, my_shield, my_ammo, my_heal_cd) =
+            if is_p2_perspective {
+                (self.p2_pos, self.p1_pos, self.p2_energy, self.p2_hp, self.p2_shield,
+                 self.p2_ammo, self.p2_heal_cooldown)
+            } else {
+                (self.p1_pos, self.p2_pos, self.p1_energy, self.p1_hp, self.p1_shield,
+                 self.p1_ammo, self.p1_heal_cooldown)
+            };
+
+        // 计算移动到水域的额外消耗
+        let water_cost = |target: (i32, i32)| -> i32 {
+            if self.is_water(target) { 1 } else { 0 }
         };
-        
+
         // 遍历所有逻辑动作
         for act in 0..ACTION_DIM {
             let phys_act = Self::transform_action(act, is_p2_perspective);
             let is_legal = match phys_act {
                 ACT_STAY => true,
                 ACT_UP => {
-                     let target = (my_pos_phys.0, my_pos_phys.1 + 1);
-                     my_pos_phys.1 < MAP_SIZE - 1 && my_energy >= COST_MOVE && !self.is_wall(target)
+                    let target = (my_pos_phys.0, my_pos_phys.1 + 1);
+                    let cost = COST_MOVE + water_cost(target);
+                    my_pos_phys.1 < MAP_SIZE - 1 && my_energy >= cost && !self.is_wall(target)
                 },
                 ACT_DOWN => {
-                     let target = (my_pos_phys.0, my_pos_phys.1 - 1);
-                     my_pos_phys.1 > 0 && my_energy >= COST_MOVE && !self.is_wall(target)
+                    let target = (my_pos_phys.0, my_pos_phys.1 - 1);
+                    let cost = COST_MOVE + water_cost(target);
+                    my_pos_phys.1 > 0 && my_energy >= cost && !self.is_wall(target)
                 },
                 ACT_LEFT => {
-                     let target = (my_pos_phys.0 - 1, my_pos_phys.1);
-                     my_pos_phys.0 > 0 && my_energy >= COST_MOVE && !self.is_wall(target)
+                    let target = (my_pos_phys.0 - 1, my_pos_phys.1);
+                    let cost = COST_MOVE + water_cost(target);
+                    my_pos_phys.0 > 0 && my_energy >= cost && !self.is_wall(target)
                 },
                 ACT_RIGHT => {
-                     let target = (my_pos_phys.0 + 1, my_pos_phys.1);
-                     my_pos_phys.0 < MAP_SIZE - 1 && my_energy >= COST_MOVE && !self.is_wall(target)
+                    let target = (my_pos_phys.0 + 1, my_pos_phys.1);
+                    let cost = COST_MOVE + water_cost(target);
+                    my_pos_phys.0 < MAP_SIZE - 1 && my_energy >= cost && !self.is_wall(target)
                 },
-                ACT_ATTACK => my_energy >= COST_ATTACK && self.check_hit(my_pos_phys, enemy_pos_phys, ATTACK_RANGE),
-                ACT_SHOOT => my_energy >= COST_SHOOT && self.check_hit(my_pos_phys, enemy_pos_phys, SHOOT_RANGE),
+                ACT_ATTACK => {
+                    my_energy >= COST_ATTACK && self.check_hit(my_pos_phys, enemy_pos_phys, ATTACK_RANGE)
+                },
+                ACT_SHOOT => {
+                    // 射击需要弹药且不被水域阻挡
+                    my_energy >= COST_SHOOT && my_ammo > 0 &&
+                    self.check_ranged_hit(my_pos_phys, enemy_pos_phys, SHOOT_RANGE)
+                },
+                ACT_DODGE => my_energy >= COST_DODGE,
+                ACT_SHIELD => my_energy >= COST_SHIELD && my_shield < MAX_SHIELD,
+                ACT_DASH => {
+                    // Dash需要有空间可以逃跑
+                    my_energy >= COST_DASH && self.can_dash(my_pos_phys, enemy_pos_phys)
+                },
+                ACT_AOE => {
+                    my_energy >= COST_AOE && self.check_hit(my_pos_phys, enemy_pos_phys, AOE_RANGE)
+                },
+                ACT_HEAL => {
+                    my_energy >= COST_HEAL && my_heal_cd == 0 && my_hp < MAX_HP
+                },
+                ACT_RELOAD => my_ammo < MAX_AMMO,
                 _ => false,
             };
-            
+
             if is_legal {
                 mask[act] = 1.0;
             }
@@ -232,10 +456,30 @@ impl SimpleDuel {
         mask
     }
 
-    fn apply_move(&mut self, is_p2: bool, phys_action: usize) {
-        let pos = if is_p2 { self.p2_pos } else { self.p1_pos }; // copy
+    fn can_dash(&self, my_pos: (i32, i32), enemy_pos: (i32, i32)) -> bool {
+        // 计算远离敌人的方向
+        let dx = my_pos.0 - enemy_pos.0;
+        let dy = my_pos.1 - enemy_pos.1;
+
+        // 选择主要逃跑方向
+        let (move_dx, move_dy) = if dx.abs() >= dy.abs() {
+            (if dx >= 0 { 1 } else { -1 }, 0)
+        } else {
+            (0, if dy >= 0 { 1 } else { -1 })
+        };
+
+        // 检查能否移动2格
+        let mid = (my_pos.0 + move_dx, my_pos.1 + move_dy);
+        let target = (my_pos.0 + 2*move_dx, my_pos.1 + 2*move_dy);
+
+        Self::is_valid(mid) && Self::is_valid(target) &&
+        !self.is_wall(mid) && !self.is_wall(target)
+    }
+
+    fn apply_move(&mut self, is_p2: bool, phys_action: usize) -> i32 {
+        let pos = if is_p2 { self.p2_pos } else { self.p1_pos };
         let mut new_pos = pos;
-        
+
         match phys_action {
             ACT_UP => new_pos.1 = (pos.1 + 1).min(MAP_SIZE - 1),
             ACT_DOWN => new_pos.1 = (pos.1 - 1).max(0),
@@ -243,13 +487,51 @@ impl SimpleDuel {
             ACT_RIGHT => new_pos.0 = (pos.0 + 1).min(MAP_SIZE - 1),
             _ => {},
         }
-        
+
+        let mut extra_cost = 0;
         if !self.is_wall(new_pos) {
-             if is_p2 { self.p2_pos = new_pos; } else { self.p1_pos = new_pos; }
+            // 水域额外消耗
+            if self.is_water(new_pos) {
+                extra_cost = 1;
+            }
+            if is_p2 { self.p2_pos = new_pos; } else { self.p1_pos = new_pos; }
         }
+        extra_cost
     }
-    
-    // Raycast check for walls
+
+    fn apply_dash(&mut self, is_p2: bool) {
+        let (my_pos, enemy_pos) = if is_p2 {
+            (self.p2_pos, self.p1_pos)
+        } else {
+            (self.p1_pos, self.p2_pos)
+        };
+
+        // 计算远离敌人的方向
+        let dx = my_pos.0 - enemy_pos.0;
+        let dy = my_pos.1 - enemy_pos.1;
+
+        let (move_dx, move_dy) = if dx.abs() >= dy.abs() {
+            (if dx >= 0 { 1 } else { -1 }, 0)
+        } else {
+            (0, if dy >= 0 { 1 } else { -1 })
+        };
+
+        // 移动2格
+        let mid = (my_pos.0 + move_dx, my_pos.1 + move_dy);
+        let target = (my_pos.0 + 2*move_dx, my_pos.1 + 2*move_dy);
+
+        let final_pos = if Self::is_valid(target) && !self.is_wall(target) {
+            target
+        } else if Self::is_valid(mid) && !self.is_wall(mid) {
+            mid
+        } else {
+            my_pos
+        };
+
+        if is_p2 { self.p2_pos = final_pos; } else { self.p1_pos = final_pos; }
+    }
+
+    // 射线检测（用于近战和AOE）
     fn has_line_of_sight(&self, p1: (i32, i32), p2: (i32, i32)) -> bool {
         let dx = (p2.0 - p1.0).abs();
         let dy = (p2.1 - p1.1).abs();
@@ -258,16 +540,16 @@ impl SimpleDuel {
         let mut err = dx - dy;
         let mut x = p1.0;
         let mut y = p1.1;
-        
+
         while (x, y) != p2 {
-            if self.is_wall((x, y)) && (x, y) != p1 { // Don't block self
-                 return false;
+            if self.is_wall((x, y)) && (x, y) != p1 {
+                return false;
             }
-            
+
             let e2 = 2 * err;
             let mut next_x = x;
             let mut next_y = y;
-            
+
             if e2 > -dy {
                 err -= dy;
                 next_x += sx;
@@ -276,14 +558,57 @@ impl SimpleDuel {
                 err += dx;
                 next_y += sy;
             }
-            
-            // Diagonal check: Block if squeezing through two walls (closed corner)
+
+            // Diagonal check
             if next_x != x && next_y != y {
-                 if self.is_wall((next_x, y)) && self.is_wall((x, next_y)) {
-                     return false;
-                 }
+                if self.is_wall((next_x, y)) && self.is_wall((x, next_y)) {
+                    return false;
+                }
             }
-            
+
+            x = next_x;
+            y = next_y;
+        }
+        true
+    }
+
+    // 远程攻击视线检查（墙和水域都阻挡）
+    fn has_ranged_line_of_sight(&self, p1: (i32, i32), p2: (i32, i32)) -> bool {
+        let dx = (p2.0 - p1.0).abs();
+        let dy = (p2.1 - p1.1).abs();
+        let sx = if p1.0 < p2.0 { 1 } else { -1 };
+        let sy = if p1.1 < p2.1 { 1 } else { -1 };
+        let mut err = dx - dy;
+        let mut x = p1.0;
+        let mut y = p1.1;
+
+        while (x, y) != p2 {
+            // 墙和水域都阻挡远程攻击
+            if (x, y) != p1 && (self.is_wall((x, y)) || self.is_water((x, y))) {
+                return false;
+            }
+
+            let e2 = 2 * err;
+            let mut next_x = x;
+            let mut next_y = y;
+
+            if e2 > -dy {
+                err -= dy;
+                next_x += sx;
+            }
+            if e2 < dx {
+                err += dx;
+                next_y += sy;
+            }
+
+            if next_x != x && next_y != y {
+                let blocked1 = self.is_wall((next_x, y)) || self.is_water((next_x, y));
+                let blocked2 = self.is_wall((x, next_y)) || self.is_water((x, next_y));
+                if blocked1 && blocked2 {
+                    return false;
+                }
+            }
+
             x = next_x;
             y = next_y;
         }
@@ -294,10 +619,152 @@ impl SimpleDuel {
         let dx = (attacker_pos.0 - target_pos.0).abs();
         let dy = (attacker_pos.1 - target_pos.1).abs();
         if dx <= range && dy <= range {
-            // Check walls
             return self.has_line_of_sight(attacker_pos, target_pos);
         }
         false
+    }
+
+    fn check_ranged_hit(&self, attacker_pos: (i32, i32), target_pos: (i32, i32), range: i32) -> bool {
+        let dx = (attacker_pos.0 - target_pos.0).abs();
+        let dy = (attacker_pos.1 - target_pos.1).abs();
+
+        // 高地额外射程
+        let bonus_range = if self.is_high_ground(attacker_pos) { 1 } else { 0 };
+
+        if dx <= range + bonus_range && dy <= range + bonus_range {
+            return self.has_ranged_line_of_sight(attacker_pos, target_pos);
+        }
+        false
+    }
+
+    // 应用伤害（考虑闪避和护盾）
+    fn apply_damage(&mut self, is_p2_target: bool, damage: i32, is_ranged: bool) -> bool {
+        let (dodge_active, shield, high_ground) = if is_p2_target {
+            (self.p2_dodge_active, self.p2_shield, self.is_high_ground(self.p2_pos))
+        } else {
+            (self.p1_dodge_active, self.p1_shield, self.is_high_ground(self.p1_pos))
+        };
+
+        // 闪避检查
+        if dodge_active {
+            // 闪避成功，清除闪避状态
+            if is_p2_target {
+                self.p2_dodge_active = false;
+            } else {
+                self.p1_dodge_active = false;
+            }
+            return false;
+        }
+
+        // 高地远程攻击减伤（50%几率闪避）
+        if is_ranged && high_ground {
+            if self.rng.gen_bool(0.5) {
+                return false;
+            }
+        }
+
+        let mut remaining_damage = damage;
+
+        // 护盾吸收
+        if shield > 0 {
+            let absorbed = remaining_damage.min(shield);
+            remaining_damage -= absorbed;
+            if is_p2_target {
+                self.p2_shield -= absorbed;
+            } else {
+                self.p1_shield -= absorbed;
+            }
+        }
+
+        // 实际伤害
+        if remaining_damage > 0 {
+            if is_p2_target {
+                self.p2_hp -= remaining_damage;
+            } else {
+                self.p1_hp -= remaining_damage;
+            }
+            return true;
+        }
+
+        false
+    }
+
+    // 道具拾取
+    fn pickup_item(&mut self, is_p2: bool) {
+        let pos = if is_p2 { self.p2_pos } else { self.p1_pos };
+        let idx = Self::pos_to_idx(pos);
+
+        match self.items[idx] {
+            ITEM_HEALTH => {
+                if is_p2 {
+                    self.p2_hp = (self.p2_hp + 1).min(MAX_HP);
+                } else {
+                    self.p1_hp = (self.p1_hp + 1).min(MAX_HP);
+                }
+                self.items[idx] = ITEM_NONE;
+                self.item_respawn[idx] = ITEM_RESPAWN_TIME;
+            },
+            ITEM_ENERGY => {
+                if is_p2 {
+                    self.p2_energy = (self.p2_energy + 3).min(MAX_ENERGY);
+                } else {
+                    self.p1_energy = (self.p1_energy + 3).min(MAX_ENERGY);
+                }
+                self.items[idx] = ITEM_NONE;
+                self.item_respawn[idx] = ITEM_RESPAWN_TIME;
+            },
+            ITEM_AMMO => {
+                if is_p2 {
+                    self.p2_ammo = (self.p2_ammo + 2).min(MAX_AMMO);
+                } else {
+                    self.p1_ammo = (self.p1_ammo + 2).min(MAX_AMMO);
+                }
+                self.items[idx] = ITEM_NONE;
+                self.item_respawn[idx] = ITEM_RESPAWN_TIME;
+            },
+            ITEM_SHIELD => {
+                if is_p2 {
+                    self.p2_shield = (self.p2_shield + 1).min(MAX_SHIELD);
+                } else {
+                    self.p1_shield = (self.p1_shield + 1).min(MAX_SHIELD);
+                }
+                self.items[idx] = ITEM_NONE;
+                self.item_respawn[idx] = ITEM_RESPAWN_TIME;
+            },
+            _ => {},
+        }
+    }
+
+    // 更新冷却和道具刷新
+    fn update_cooldowns(&mut self) {
+        if self.p1_heal_cooldown > 0 { self.p1_heal_cooldown -= 1; }
+        if self.p2_heal_cooldown > 0 { self.p2_heal_cooldown -= 1; }
+
+        // 道具刷新 - 需要记住原始道具类型
+        for idx in 0..self.item_respawn.len() {
+            if self.item_respawn[idx] > 0 {
+                self.item_respawn[idx] -= 1;
+                if self.item_respawn[idx] == 0 {
+                    // 重新生成随机道具
+                    let item_type = match self.rng.gen_range(0..4) {
+                        0 => ITEM_HEALTH,
+                        1 => ITEM_ENERGY,
+                        2 => ITEM_AMMO,
+                        _ => ITEM_SHIELD,
+                    };
+                    self.items[idx] = item_type;
+
+                    // 对称位置也刷新
+                    let pos = Self::idx_to_pos(idx);
+                    let sym_pos = (MAP_SIZE - 1 - pos.0, MAP_SIZE - 1 - pos.1);
+                    let sym_idx = Self::pos_to_idx(sym_pos);
+                    if sym_idx != idx {
+                        self.items[sym_idx] = item_type;
+                        self.item_respawn[sym_idx] = 0;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -311,11 +778,23 @@ impl GameEnv for SimpleDuel {
             p2_hp: MAX_HP,
             p1_energy: MAX_ENERGY,
             p2_energy: MAX_ENERGY,
+            p1_shield: 0,
+            p2_shield: 0,
+            p1_ammo: MAX_AMMO,
+            p2_ammo: MAX_AMMO,
+            p1_dodge_active: false,
+            p2_dodge_active: false,
+            p1_heal_cooldown: 0,
+            p2_heal_cooldown: 0,
             step_count: 0,
-            walls: vec![false; (MAP_SIZE * MAP_SIZE) as usize],
+            terrain: vec![TERRAIN_EMPTY; (MAP_SIZE * MAP_SIZE) as usize],
+            items: vec![ITEM_NONE; (MAP_SIZE * MAP_SIZE) as usize],
+            item_respawn: vec![0; (MAP_SIZE * MAP_SIZE) as usize],
             rng,
             p1_attacks: 0,
             p2_attacks: 0,
+            p1_damage_dealt: 0,
+            p2_damage_dealt: 0,
         }
     }
 
@@ -323,44 +802,32 @@ impl GameEnv for SimpleDuel {
         self.step_count = 0;
         self.p1_attacks = 0;
         self.p2_attacks = 0;
-        
-        // 1. Generate Walls
-        // Randomly place 4-8 walls, ensuring symmetry
-        let num_walls = self.rng.gen_range(4..9); 
-        self.walls.fill(false);
-        
-        let mut count = 0;
-        while count < num_walls {
-            let wx = self.rng.gen_range(0..MAP_SIZE);
-            let wy = self.rng.gen_range(0..MAP_SIZE);
-            // Symmetry: (x, y) and (W-1-x, H-1-y)
-            let sym_wx = MAP_SIZE - 1 - wx;
-            let sym_wy = MAP_SIZE - 1 - wy;
-            
-            // Don't block corners (spawn areas approx)
-            if (wx + wy) < 3 || (sym_wx + sym_wy) < 3 { continue; } // Top-left
-            if (wx + wy) > (2 * MAP_SIZE - 4) { continue; } // Bottom-right
-            
-            let idx1 = (wy * MAP_SIZE + wx) as usize;
-            let idx2 = (sym_wy * MAP_SIZE + sym_wx) as usize;
-            
-            if !self.walls[idx1] {
-                self.walls[idx1] = true;
-                self.walls[idx2] = true; // Symmetric
-                count += 1; // Count pairs or single walls? Just approx.
-            }
-        }
+        self.p1_damage_dealt = 0;
+        self.p2_damage_dealt = 0;
+        self.p1_shield = 0;
+        self.p2_shield = 0;
+        self.p1_ammo = MAX_AMMO;
+        self.p2_ammo = MAX_AMMO;
+        self.p1_dodge_active = false;
+        self.p2_dodge_active = false;
+        self.p1_heal_cooldown = 0;
+        self.p2_heal_cooldown = 0;
 
-        // 2. Spawn Players
+        // 生成地形
+        self.generate_terrain();
+
+        // 生成玩家位置
         self.p1_pos = (self.rng.gen_range(0..MAP_SIZE), self.rng.gen_range(0..MAP_SIZE));
         self.p2_pos = (self.rng.gen_range(0..MAP_SIZE), self.rng.gen_range(0..MAP_SIZE));
-        
-        // Retry if invalid
-        while self.p1_pos == self.p2_pos || self.is_wall(self.p1_pos) || self.is_wall(self.p2_pos) {
-             self.p1_pos = (self.rng.gen_range(0..MAP_SIZE), self.rng.gen_range(0..MAP_SIZE));
-             self.p2_pos = (self.rng.gen_range(0..MAP_SIZE), self.rng.gen_range(0..MAP_SIZE));
+
+        // 确保位置合法
+        while self.p1_pos == self.p2_pos ||
+              self.is_wall(self.p1_pos) || self.is_wall(self.p2_pos) ||
+              self.is_water(self.p1_pos) || self.is_water(self.p2_pos) {
+            self.p1_pos = (self.rng.gen_range(0..MAP_SIZE), self.rng.gen_range(0..MAP_SIZE));
+            self.p2_pos = (self.rng.gen_range(0..MAP_SIZE), self.rng.gen_range(0..MAP_SIZE));
         }
-        
+
         self.p1_hp = MAX_HP;
         self.p2_hp = MAX_HP;
         self.p1_energy = MAX_ENERGY;
@@ -374,93 +841,178 @@ impl GameEnv for SimpleDuel {
         )
     }
 
-    fn step(&mut self, action_p1: usize, action_p2: usize) 
-        -> (Vec<f32>, Vec<f32>, f32, f32, bool, Vec<f32>, Vec<f32>, HashMap<String, f32>) 
+    fn step(&mut self, action_p1: usize, action_p2: usize)
+        -> (Vec<f32>, Vec<f32>, f32, f32, bool, Vec<f32>, Vec<f32>, HashMap<String, f32>)
     {
         self.step_count += 1;
+
+        // 清除上回合的闪避状态
+        self.p1_dodge_active = false;
+        self.p2_dodge_active = false;
 
         // 1. 转换动作为物理动作
         let phys_act_p1 = Self::transform_action(action_p1, false);
         let phys_act_p2 = Self::transform_action(action_p2, true);
 
-        // 2. 消耗能量 & 移动
-        // P1
+        // 2. 处理动作（按类型分组处理）
+
+        // P1 动作处理
         let mut cost_p1 = 0;
         match phys_act_p1 {
             ACT_UP | ACT_DOWN | ACT_LEFT | ACT_RIGHT => cost_p1 = COST_MOVE,
             ACT_ATTACK => cost_p1 = COST_ATTACK,
             ACT_SHOOT => cost_p1 = COST_SHOOT,
+            ACT_DODGE => cost_p1 = COST_DODGE,
+            ACT_SHIELD => cost_p1 = COST_SHIELD,
+            ACT_DASH => cost_p1 = COST_DASH,
+            ACT_AOE => cost_p1 = COST_AOE,
+            ACT_HEAL => cost_p1 = COST_HEAL,
+            ACT_RELOAD => cost_p1 = 0,
             _ => {},
         }
-        if self.p1_energy >= cost_p1 {
-            self.p1_energy -= cost_p1;
-            self.apply_move(false, phys_act_p1);
-        }
 
-        // P2
+        // P2 动作处理
         let mut cost_p2 = 0;
         match phys_act_p2 {
             ACT_UP | ACT_DOWN | ACT_LEFT | ACT_RIGHT => cost_p2 = COST_MOVE,
             ACT_ATTACK => cost_p2 = COST_ATTACK,
             ACT_SHOOT => cost_p2 = COST_SHOOT,
+            ACT_DODGE => cost_p2 = COST_DODGE,
+            ACT_SHIELD => cost_p2 = COST_SHIELD,
+            ACT_DASH => cost_p2 = COST_DASH,
+            ACT_AOE => cost_p2 = COST_AOE,
+            ACT_HEAL => cost_p2 = COST_HEAL,
+            ACT_RELOAD => cost_p2 = 0,
             _ => {},
         }
-        if self.p2_energy >= cost_p2 {
-            self.p2_energy -= cost_p2;
-            self.apply_move(true, phys_act_p2);
+
+        // 执行非攻击动作
+        if self.p1_energy >= cost_p1 {
+            self.p1_energy -= cost_p1;
+            match phys_act_p1 {
+                ACT_UP | ACT_DOWN | ACT_LEFT | ACT_RIGHT => {
+                    let extra = self.apply_move(false, phys_act_p1);
+                    self.p1_energy -= extra;
+                },
+                ACT_DODGE => self.p1_dodge_active = true,
+                ACT_SHIELD => self.p1_shield = (self.p1_shield + 1).min(MAX_SHIELD),
+                ACT_DASH => self.apply_dash(false),
+                ACT_HEAL => {
+                    if self.p1_heal_cooldown == 0 {
+                        self.p1_hp = (self.p1_hp + 1).min(MAX_HP);
+                        self.p1_heal_cooldown = HEAL_COOLDOWN;
+                    }
+                },
+                ACT_RELOAD => self.p1_ammo = (self.p1_ammo + 3).min(MAX_AMMO),
+                _ => {},
+            }
         }
 
-        // 3. 攻击判定
+        if self.p2_energy >= cost_p2 {
+            self.p2_energy -= cost_p2;
+            match phys_act_p2 {
+                ACT_UP | ACT_DOWN | ACT_LEFT | ACT_RIGHT => {
+                    let extra = self.apply_move(true, phys_act_p2);
+                    self.p2_energy -= extra;
+                },
+                ACT_DODGE => self.p2_dodge_active = true,
+                ACT_SHIELD => self.p2_shield = (self.p2_shield + 1).min(MAX_SHIELD),
+                ACT_DASH => self.apply_dash(true),
+                ACT_HEAL => {
+                    if self.p2_heal_cooldown == 0 {
+                        self.p2_hp = (self.p2_hp + 1).min(MAX_HP);
+                        self.p2_heal_cooldown = HEAL_COOLDOWN;
+                    }
+                },
+                ACT_RELOAD => self.p2_ammo = (self.p2_ammo + 3).min(MAX_AMMO),
+                _ => {},
+            }
+        }
+
+        // 3. 道具拾取
+        self.pickup_item(false);
+        self.pickup_item(true);
+
+        // 4. 攻击判定
         let mut r1 = 0.0;
         let mut r2 = 0.0;
 
-        // P1 Action
-        if phys_act_p1 == ACT_ATTACK && cost_p1 == COST_ATTACK { 
-             // Melee: Check adjacency + Line of Sight (Walls block melee?)
-             // Let's say Walls block Melee too.
-             if self.check_hit(self.p1_pos, self.p2_pos, ATTACK_RANGE) {
-                 self.p2_hp -= 1;
-                 r1 += 1.0;
-                 r2 -= 1.0;
-                 self.p1_attacks += 1;
-             }
-        } else if phys_act_p1 == ACT_SHOOT && cost_p1 == COST_SHOOT {
-             if self.check_hit(self.p1_pos, self.p2_pos, SHOOT_RANGE) {
-                 self.p2_hp -= 1; 
-                 r1 += 1.0;
-                 r2 -= 1.0;
-                 self.p1_attacks += 1;
-             }
+        // P1 攻击
+        if phys_act_p1 == ACT_ATTACK && cost_p1 == COST_ATTACK {
+            if self.check_hit(self.p1_pos, self.p2_pos, ATTACK_RANGE) {
+                if self.apply_damage(true, 1, false) {
+                    r1 += 1.0;
+                    r2 -= 1.0;
+                    self.p1_damage_dealt += 1;
+                }
+                self.p1_attacks += 1;
+            }
+        } else if phys_act_p1 == ACT_SHOOT && cost_p1 == COST_SHOOT && self.p1_ammo > 0 {
+            self.p1_ammo -= 1;
+            if self.check_ranged_hit(self.p1_pos, self.p2_pos, SHOOT_RANGE) {
+                if self.apply_damage(true, 1, true) {
+                    r1 += 1.0;
+                    r2 -= 1.0;
+                    self.p1_damage_dealt += 1;
+                }
+                self.p1_attacks += 1;
+            }
+        } else if phys_act_p1 == ACT_AOE && cost_p1 == COST_AOE {
+            if self.check_hit(self.p1_pos, self.p2_pos, AOE_RANGE) {
+                if self.apply_damage(true, 1, false) {
+                    r1 += 1.0;
+                    r2 -= 1.0;
+                    self.p1_damage_dealt += 1;
+                }
+                self.p1_attacks += 1;
+            }
         }
 
-        // P2 Action
+        // P2 攻击
         if phys_act_p2 == ACT_ATTACK && cost_p2 == COST_ATTACK {
-             if self.check_hit(self.p2_pos, self.p1_pos, ATTACK_RANGE) {
-                 self.p1_hp -= 1;
-                 r2 += 1.0;
-                 r1 -= 1.0;
-                 self.p2_attacks += 1;
-             }
-        } else if phys_act_p2 == ACT_SHOOT && cost_p2 == COST_SHOOT {
-             if self.check_hit(self.p2_pos, self.p1_pos, SHOOT_RANGE) {
-                 self.p1_hp -= 1;
-                 r2 += 1.0;
-                 r1 -= 1.0;
-                 self.p2_attacks += 1;
-             }
+            if self.check_hit(self.p2_pos, self.p1_pos, ATTACK_RANGE) {
+                if self.apply_damage(false, 1, false) {
+                    r2 += 1.0;
+                    r1 -= 1.0;
+                    self.p2_damage_dealt += 1;
+                }
+                self.p2_attacks += 1;
+            }
+        } else if phys_act_p2 == ACT_SHOOT && cost_p2 == COST_SHOOT && self.p2_ammo > 0 {
+            self.p2_ammo -= 1;
+            if self.check_ranged_hit(self.p2_pos, self.p1_pos, SHOOT_RANGE) {
+                if self.apply_damage(false, 1, true) {
+                    r2 += 1.0;
+                    r1 -= 1.0;
+                    self.p2_damage_dealt += 1;
+                }
+                self.p2_attacks += 1;
+            }
+        } else if phys_act_p2 == ACT_AOE && cost_p2 == COST_AOE {
+            if self.check_hit(self.p2_pos, self.p1_pos, AOE_RANGE) {
+                if self.apply_damage(false, 1, false) {
+                    r2 += 1.0;
+                    r1 -= 1.0;
+                    self.p2_damage_dealt += 1;
+                }
+                self.p2_attacks += 1;
+            }
         }
-        
-        // 4. 能量恢复 (Sudden Death: Stop regen)
+
+        // 5. 更新冷却
+        self.update_cooldowns();
+
+        // 6. 能量恢复 (突然死亡阶段停止恢复)
         let regen = if self.step_count > SUDDEN_DEATH_STEP { 0 } else { REGEN_ENERGY };
-        
+
         self.p1_energy = (self.p1_energy + regen).min(MAX_ENERGY);
         self.p2_energy = (self.p2_energy + regen).min(MAX_ENERGY);
 
-        // 5. 结束判定
+        // 7. 结束判定
         let done = self.p1_hp <= 0 || self.p2_hp <= 0 || self.step_count >= MAX_STEPS;
-        
+
         let mut info = HashMap::new();
-        
+
         if done {
             if self.p1_hp > self.p2_hp {
                 r1 += 5.0; r2 -= 5.0;
@@ -477,9 +1029,11 @@ impl GameEnv for SimpleDuel {
                 info.insert("p2_win".to_string(), 0.0);
                 info.insert("draw".to_string(), 1.0);
             }
-            
+
             info.insert("p1_attacks".to_string(), self.p1_attacks as f32);
             info.insert("p2_attacks".to_string(), self.p2_attacks as f32);
+            info.insert("p1_damage".to_string(), self.p1_damage_dealt as f32);
+            info.insert("p2_damage".to_string(), self.p2_damage_dealt as f32);
             info.insert("steps".to_string(), self.step_count as f32);
         }
 
@@ -524,31 +1078,19 @@ impl VectorizedEnv {
         let obs_dim = SimpleDuel::obs_dim();
         let act_dim = SimpleDuel::action_dim();
 
-        // 预分配内存
-        // Obs Batch: [2 * N, Obs_Dim] (P1 前 N 个，P2 后 N 个)
-        // Mask Batch: [2 * N, Act_Dim]
-        
-        // 我们需要收集所有环境的结果
-        // 使用 Rayon 并行处理
         let results: Vec<(Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>)> = self.envs.par_iter_mut()
             .map(|env| env.reset())
             .collect();
 
-        // 拼装数据
         let mut obs_batch = vec![0.0; 2 * n * obs_dim];
         let mut mask_batch = vec![0.0; 2 * n * act_dim];
 
         for (i, (o1, o2, m1, m2)) in results.into_iter().enumerate() {
-            // P1 数据放在 i
-            // P2 数据放在 n + i
-            
-            // Obs
             let p1_start = i * obs_dim;
             let p2_start = (n + i) * obs_dim;
             obs_batch[p1_start..p1_start+obs_dim].copy_from_slice(&o1);
             obs_batch[p2_start..p2_start+obs_dim].copy_from_slice(&o2);
-            
-            // Mask
+
             let m1_start = i * act_dim;
             let m2_start = (n + i) * act_dim;
             mask_batch[m1_start..m1_start+act_dim].copy_from_slice(&m1);
@@ -557,30 +1099,26 @@ impl VectorizedEnv {
 
         let py_obs = PyArray1::from_vec(py, obs_batch).reshape((2 * n, obs_dim)).unwrap();
         let py_mask = PyArray1::from_vec(py, mask_batch).reshape((2 * n, act_dim)).unwrap();
-        
+
         (py_obs, py_mask)
     }
 
-    fn step<'py>(&mut self, py: Python<'py>, actions_p1: Vec<usize>, actions_p2: Vec<usize>) 
-        -> (Bound<'py, PyArray2<f32>>, Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<bool>>, Bound<'py, PyArray2<f32>>, Bound<'py, PyList>) 
+    fn step<'py>(&mut self, py: Python<'py>, actions_p1: Vec<usize>, actions_p2: Vec<usize>)
+        -> (Bound<'py, PyArray2<f32>>, Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<bool>>, Bound<'py, PyArray2<f32>>, Bound<'py, PyList>)
     {
         let n = self.envs.len();
         let obs_dim = SimpleDuel::obs_dim();
         let act_dim = SimpleDuel::action_dim();
-        
+
         assert_eq!(actions_p1.len(), n);
         assert_eq!(actions_p2.len(), n);
 
-        // Rayon 并行 Step
         let results: Vec<(Vec<f32>, Vec<f32>, f32, f32, bool, Vec<f32>, Vec<f32>, HashMap<String, f32>)> = self.envs.par_iter_mut()
             .zip(actions_p1.par_iter().zip(actions_p2.par_iter()))
             .map(|(env, (&a1, &a2))| {
                 let (o1, o2, r1, r2, d, m1, m2, info) = env.step(a1, a2);
                 if d {
-                    // 自动 reset
                     let (new_o1, new_o2, new_m1, new_m2) = env.reset();
-                    // 返回 reset 后的 obs 和 mask，但 reward 和 done 保持
-                    // 注意：info 也是这一步产生的，所以要保留
                     (new_o1, new_o2, r1, r2, true, new_m1, new_m2, info)
                 } else {
                     (o1, o2, r1, r2, false, m1, m2, info)
@@ -588,37 +1126,29 @@ impl VectorizedEnv {
             })
             .collect();
 
-        // 拼装
         let mut obs_batch = vec![0.0; 2 * n * obs_dim];
         let mut reward_batch = vec![0.0; 2 * n];
-        let mut done_batch = vec![false; n]; // 只需要 N 个，因为环境同时结束
+        let mut done_batch = vec![false; n];
         let mut mask_batch = vec![0.0; 2 * n * act_dim];
-        
-        // Info 需要转换为 Python 对象，这必须在 GIL 持有下串行进行
-        // 我们创建一个 list，包含 n 个 dict
+
         let py_info_list = PyList::empty(py);
 
         for (i, (o1, o2, r1, r2, d, m1, m2, info)) in results.into_iter().enumerate() {
-            // Obs
             let p1_obs_idx = i * obs_dim;
             let p2_obs_idx = (n + i) * obs_dim;
             obs_batch[p1_obs_idx..p1_obs_idx+obs_dim].copy_from_slice(&o1);
             obs_batch[p2_obs_idx..p2_obs_idx+obs_dim].copy_from_slice(&o2);
-            
-            // Reward
+
             reward_batch[i] = r1;
             reward_batch[n + i] = r2;
-            
-            // Done
+
             done_batch[i] = d;
-            
-            // Mask
+
             let p1_mask_idx = i * act_dim;
             let p2_mask_idx = (n + i) * act_dim;
             mask_batch[p1_mask_idx..p1_mask_idx+act_dim].copy_from_slice(&m1);
             mask_batch[p2_mask_idx..p2_mask_idx+act_dim].copy_from_slice(&m2);
-            
-            // Info
+
             let py_dict = PyDict::new(py);
             for (k, v) in info {
                 py_dict.set_item(k, v).unwrap();
@@ -627,8 +1157,8 @@ impl VectorizedEnv {
         }
 
         let py_obs = PyArray1::from_vec(py, obs_batch).reshape((2 * n, obs_dim)).unwrap();
-        let py_reward = PyArray1::from_vec(py, reward_batch); // [2*N]
-        let py_done = PyArray1::from_vec(py, done_batch); // [N]
+        let py_reward = PyArray1::from_vec(py, reward_batch);
+        let py_done = PyArray1::from_vec(py, done_batch);
         let py_mask = PyArray1::from_vec(py, mask_batch).reshape((2 * n, act_dim)).unwrap();
 
         (py_obs, py_reward, py_done, py_mask, py_info_list)
