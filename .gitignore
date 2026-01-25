@@ -17,6 +17,10 @@ replays/
 *.pth
 *.log
 
+# Reference Repos
+cleanrl_repo/
+sb3_repo/
+
 # Editor / OS
 .vscode/
 .idea/
