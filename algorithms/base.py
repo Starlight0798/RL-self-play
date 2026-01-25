@@ -1,8 +1,9 @@
 from abc import ABC, abstractmethod
 
+
 class BaseAlgorithm(ABC):
     @abstractmethod
-    def get_action(self, obs, mask=None, deterministic=False):
+    def get_action(self, obs, mask=None, deterministic=False) -> tuple:
         """
         根据观测返回动作。
         Returns:
@@ -10,9 +11,9 @@ class BaseAlgorithm(ABC):
             info: 算法特定的额外信息 (Dict), 例如 logprobs, values
         """
         pass
-    
+
     @abstractmethod
-    def store_transition(self, obs, action, reward, done, mask, info):
+    def store_transition(self, obs, action, reward, done, mask, info, **kwargs):
         """
         存储一步交互数据到缓冲区。
         """

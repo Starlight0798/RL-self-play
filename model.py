@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
+from torch.distributions import Categorical
 import numpy as np
-from models.registry import register_model
+from models.registry import register_model, get_model
 
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
@@ -133,7 +134,7 @@ class ActorCritic(nn.Module):
             HUGE_NEG = -1e8
             logits = logits + (action_mask - 1.0) * (-HUGE_NEG)
 
-        probs = torch.distributions.Categorical(logits=logits)
+        probs = Categorical(logits=logits)
 
         if action is None:
             action = probs.sample()
@@ -214,7 +215,7 @@ class DuelingActorCritic(nn.Module):
             HUGE_NEG = -1e8
             logits = logits + (action_mask - 1.0) * (-HUGE_NEG)
 
-        probs = torch.distributions.Categorical(logits=logits)
+        probs = Categorical(logits=logits)
 
         if action is None:
             action = probs.sample()
@@ -222,3 +223,83 @@ class DuelingActorCritic(nn.Module):
         value = self.value_branch(shared)
 
         return action, probs.log_prob(action), probs.entropy(), value
+
+
+@register_model("simple_mlp")
+class SimpleMLP(nn.Module):
+    """Simple MLP actor-critic for small observation spaces."""
+
+    def __init__(self, obs_dim: int, action_dim: int, hidden_dim: int = 128):
+        super().__init__()
+        self.obs_dim = obs_dim
+        self.action_dim = action_dim
+
+        self.backbone = nn.Sequential(
+            layer_init(nn.Linear(obs_dim, hidden_dim)),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            layer_init(nn.Linear(hidden_dim, hidden_dim)),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+        )
+
+        self.actor = layer_init(nn.Linear(hidden_dim, action_dim), std=0.01)
+        self.critic = layer_init(nn.Linear(hidden_dim, 1), std=1.0)
+
+    def get_action_and_value(
+        self,
+        obs: torch.Tensor,
+        action_mask: torch.Tensor,
+        action: torch.Tensor | None = None,
+        deterministic: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        features = self.backbone(obs)
+        logits = self.actor(features)
+
+        masked_logits = logits.clone()
+        masked_logits[action_mask == 0] = -1e8
+
+        probs = Categorical(logits=masked_logits)
+
+        if action is None:
+            if deterministic:
+                action = masked_logits.argmax(dim=-1)
+            else:
+                action = probs.sample()
+
+        assert action is not None
+        value = self.critic(features)
+
+        return action, probs.log_prob(action), probs.entropy(), value.squeeze(-1)
+
+    def get_value(self, obs: torch.Tensor) -> torch.Tensor:
+        features = self.backbone(obs)
+        return self.critic(features).squeeze(-1)
+
+
+def create_model_for_game(
+    game_name: str,
+    obs_dim: int,
+    action_dim: int,
+    model_name: str | None = None,
+) -> nn.Module:
+    """Create an appropriate model for the given game.
+
+    Args:
+        game_name: Name of the game
+        obs_dim: Observation dimension
+        action_dim: Action dimension
+        model_name: Optional specific model name. If None, auto-selects.
+
+    Returns:
+        Instantiated model
+    """
+    if model_name is None:
+        if game_name == "simple_duel":
+            model_name = "actor_critic"
+        elif game_name == "tictactoe":
+            model_name = "simple_mlp"
+        else:
+            model_name = "simple_mlp"
+
+    return get_model(model_name, obs_dim=obs_dim, action_dim=action_dim)
