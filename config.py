@@ -3,6 +3,71 @@ from dataclasses import dataclass, field
 
 
 @dataclass
+class GameConfig:
+    """Base configuration for game-specific parameters."""
+
+    name: str = "simple_duel"
+    obs_dim: int = 160
+    action_dim: int = 13
+
+    # Game-specific reward shaping (optional)
+    use_reward_shaping: bool = True
+
+    @classmethod
+    def from_name(cls, name: str) -> "GameConfig":
+        """Create GameConfig from game name."""
+        configs = {
+            "simple_duel": SimpleDuelConfig,
+            "tictactoe": TicTacToeConfig,
+        }
+        if name in configs:
+            return configs[name]()
+        # Try to get from Rust registry
+        try:
+            from envs import get_game_info
+
+            info = get_game_info(name)
+            return GameConfig(
+                name=name,
+                obs_dim=info.obs_dim,
+                action_dim=info.action_dim,
+                use_reward_shaping=False,
+            )
+        except Exception:
+            raise ValueError(f"Unknown game: {name}")
+
+
+@dataclass
+class SimpleDuelConfig(GameConfig):
+    """Configuration for SimpleDuel game."""
+
+    name: str = "simple_duel"
+    obs_dim: int = 160
+    action_dim: int = 13
+    use_reward_shaping: bool = True
+
+    # SimpleDuel-specific
+    map_size: int = 12
+    max_hp: int = 4
+    max_energy: int = 7
+    max_ammo: int = 6
+    max_shield: int = 2
+
+
+@dataclass
+class TicTacToeConfig(GameConfig):
+    """Configuration for TicTacToe game."""
+
+    name: str = "tictactoe"
+    obs_dim: int = 27
+    action_dim: int = 9
+    use_reward_shaping: bool = False  # Simple win/lose rewards
+
+    # TicTacToe-specific
+    board_size: int = 3
+
+
+@dataclass
 class Config:
     # ============ 基础训练参数 ============
     total_timesteps: int = 10_000_000
@@ -43,11 +108,19 @@ class Config:
     save_interval: int = 100
     eval_opponent: str = "self"
 
+    # Game configuration
+    game: str = "simple_duel"
+    game_config: GameConfig = field(default_factory=lambda: SimpleDuelConfig())
+
     # Non-init fields
     device: torch.device = field(init=False)
     train_steps: int = field(init=False)
 
     def __post_init__(self):
+        # Auto-create game_config if game name changed
+        if self.game != self.game_config.name:
+            self.game_config = GameConfig.from_name(self.game)
+
         # Calculate derived values
         self.batch_size = 2 * self.num_envs * self.num_steps
         self.num_minibatches = self.batch_size // self.minibatch_size
