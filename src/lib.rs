@@ -4,6 +4,37 @@ use pyo3::types::{PyDict, PyList};
 use rand::prelude::*;
 use rayon::prelude::*;
 use std::collections::HashMap;
+use std::sync::LazyLock;
+
+// ============================================================================
+// Game Registry - Type-erased game factory system
+// ============================================================================
+
+/// Factory function type for creating game instances
+type GameFactory = fn() -> GameEnvDispatch;
+
+/// Game registry: maps game name to (factory, obs_dim, action_dim)
+static GAME_REGISTRY: LazyLock<HashMap<&'static str, (GameFactory, usize, usize)>> =
+    LazyLock::new(|| {
+        let mut registry = HashMap::new();
+        registry.insert(
+            "simple_duel",
+            (
+                (|| GameEnvDispatch::SimpleDuel(<SimpleDuel as GameEnv>::new())) as GameFactory,
+                OBS_DIM,
+                ACTION_DIM,
+            ),
+        );
+        registry.insert(
+            "tictactoe",
+            (
+                (|| GameEnvDispatch::TicTacToe(<TicTacToe as GameEnv>::new())) as GameFactory,
+                TICTACTOE_OBS_DIM,
+                TICTACTOE_ACTION_DIM,
+            ),
+        );
+        registry
+    });
 
 // ============================================================================
 // 1. 核心 Trait 定义
@@ -1738,7 +1769,358 @@ impl GameEnvZeroCopy for SimpleDuel {
 }
 
 // ============================================================================
-// 3. VectorizedEnv PyClass
+// 3. TicTacToe Implementation - Simple 3x3 game for testing
+// ============================================================================
+
+const TICTACTOE_OBS_DIM: usize = 27;
+const TICTACTOE_ACTION_DIM: usize = 9;
+
+#[derive(Clone)]
+struct TicTacToe {
+    board: [i8; 9],
+    current_player: i8,
+    step_count: i32,
+}
+
+impl TicTacToe {
+    fn check_winner(&self) -> Option<i8> {
+        const WIN_PATTERNS: [[usize; 3]; 8] = [
+            [0, 1, 2],
+            [3, 4, 5],
+            [6, 7, 8],
+            [0, 3, 6],
+            [1, 4, 7],
+            [2, 5, 8],
+            [0, 4, 8],
+            [2, 4, 6],
+        ];
+
+        for pattern in WIN_PATTERNS {
+            let a = self.board[pattern[0]];
+            let b = self.board[pattern[1]];
+            let c = self.board[pattern[2]];
+            if a != 0 && a == b && b == c {
+                return Some(a);
+            }
+        }
+        None
+    }
+
+    fn is_board_full(&self) -> bool {
+        self.board.iter().all(|&cell| cell != 0)
+    }
+
+    fn get_obs_for_player(&self, player: i8) -> Vec<f32> {
+        let mut obs = vec![0.0; TICTACTOE_OBS_DIM];
+        for (i, &cell) in self.board.iter().enumerate() {
+            let transformed_cell = if player == 1 { cell } else { -cell };
+            let base = i * 3;
+            match transformed_cell {
+                0 => obs[base] = 1.0,
+                1 => obs[base + 1] = 1.0,
+                -1 => obs[base + 2] = 1.0,
+                _ => {}
+            }
+        }
+        obs
+    }
+
+    fn get_obs_into_for_player(&self, player: i8, obs: &mut [f32]) {
+        obs.fill(0.0);
+        for (i, &cell) in self.board.iter().enumerate() {
+            let transformed_cell = if player == 1 { cell } else { -cell };
+            let base = i * 3;
+            match transformed_cell {
+                0 => obs[base] = 1.0,
+                1 => obs[base + 1] = 1.0,
+                -1 => obs[base + 2] = 1.0,
+                _ => {}
+            }
+        }
+    }
+
+    fn get_mask(&self) -> Vec<f32> {
+        let mut mask = vec![0.0; TICTACTOE_ACTION_DIM];
+        for (i, &cell) in self.board.iter().enumerate() {
+            if cell == 0 {
+                mask[i] = 1.0;
+            }
+        }
+        mask
+    }
+
+    fn get_mask_into(&self, mask: &mut [f32]) {
+        for (i, &cell) in self.board.iter().enumerate() {
+            mask[i] = if cell == 0 { 1.0 } else { 0.0 };
+        }
+    }
+}
+
+impl GameEnv for TicTacToe {
+    fn new() -> Self {
+        TicTacToe {
+            board: [0; 9],
+            current_player: 1,
+            step_count: 0,
+        }
+    }
+
+    fn reset(&mut self) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
+        self.board = [0; 9];
+        self.current_player = 1;
+        self.step_count = 0;
+
+        let obs_p1 = self.get_obs_for_player(1);
+        let obs_p2 = self.get_obs_for_player(-1);
+        let mask = self.get_mask();
+
+        (obs_p1, obs_p2, mask.clone(), mask)
+    }
+
+    fn step(
+        &mut self,
+        action_p1: usize,
+        action_p2: usize,
+    ) -> (
+        Vec<f32>,
+        Vec<f32>,
+        f32,
+        f32,
+        bool,
+        Vec<f32>,
+        Vec<f32>,
+        HashMap<String, f32>,
+    ) {
+        self.step_count += 1;
+
+        let action = if self.current_player == 1 {
+            action_p1
+        } else {
+            action_p2
+        };
+
+        let mut r1 = 0.0;
+        let mut r2 = 0.0;
+        let mut done = false;
+        let mut info = HashMap::new();
+
+        if action < 9 && self.board[action] == 0 {
+            self.board[action] = self.current_player;
+
+            if let Some(winner) = self.check_winner() {
+                done = true;
+                if winner == 1 {
+                    r1 = 1.0;
+                    r2 = -1.0;
+                    info.insert("p1_win".to_string(), 1.0);
+                    info.insert("p2_win".to_string(), 0.0);
+                } else {
+                    r1 = -1.0;
+                    r2 = 1.0;
+                    info.insert("p1_win".to_string(), 0.0);
+                    info.insert("p2_win".to_string(), 1.0);
+                }
+                info.insert("draw".to_string(), 0.0);
+                info.insert("steps".to_string(), self.step_count as f32);
+            } else if self.is_board_full() {
+                done = true;
+                info.insert("p1_win".to_string(), 0.0);
+                info.insert("p2_win".to_string(), 0.0);
+                info.insert("draw".to_string(), 1.0);
+                info.insert("steps".to_string(), self.step_count as f32);
+            }
+
+            self.current_player = -self.current_player;
+        }
+
+        let obs_p1 = self.get_obs_for_player(1);
+        let obs_p2 = self.get_obs_for_player(-1);
+        let mask = self.get_mask();
+
+        (obs_p1, obs_p2, r1, r2, done, mask.clone(), mask, info)
+    }
+
+    fn obs_dim() -> usize {
+        TICTACTOE_OBS_DIM
+    }
+
+    fn action_dim() -> usize {
+        TICTACTOE_ACTION_DIM
+    }
+}
+
+impl GameEnvZeroCopy for TicTacToe {
+    fn new() -> Self {
+        <Self as GameEnv>::new()
+    }
+
+    fn reset_into(
+        &mut self,
+        obs_p1: &mut [f32],
+        obs_p2: &mut [f32],
+        mask_p1: &mut [f32],
+        mask_p2: &mut [f32],
+    ) {
+        self.board = [0; 9];
+        self.current_player = 1;
+        self.step_count = 0;
+
+        self.get_obs_into_for_player(1, obs_p1);
+        self.get_obs_into_for_player(-1, obs_p2);
+        self.get_mask_into(mask_p1);
+        self.get_mask_into(mask_p2);
+    }
+
+    fn step_into(
+        &mut self,
+        action_p1: usize,
+        action_p2: usize,
+        obs_p1: &mut [f32],
+        obs_p2: &mut [f32],
+        mask_p1: &mut [f32],
+        mask_p2: &mut [f32],
+    ) -> (f32, f32, bool, GameInfo) {
+        self.step_count += 1;
+
+        let action = if self.current_player == 1 {
+            action_p1
+        } else {
+            action_p2
+        };
+
+        let mut r1 = 0.0;
+        let mut r2 = 0.0;
+        let mut done = false;
+        let mut info = GameInfo::new();
+
+        if action < 9 && self.board[action] == 0 {
+            self.board[action] = self.current_player;
+
+            if let Some(winner) = self.check_winner() {
+                done = true;
+                if winner == 1 {
+                    r1 = 1.0;
+                    r2 = -1.0;
+                    info = GameInfo::terminal(true, false, false, 0, 0, 0, 0, self.step_count);
+                } else {
+                    r1 = -1.0;
+                    r2 = 1.0;
+                    info = GameInfo::terminal(false, true, false, 0, 0, 0, 0, self.step_count);
+                }
+            } else if self.is_board_full() {
+                done = true;
+                info = GameInfo::terminal(false, false, true, 0, 0, 0, 0, self.step_count);
+            }
+
+            self.current_player = -self.current_player;
+        }
+
+        self.get_obs_into_for_player(1, obs_p1);
+        self.get_obs_into_for_player(-1, obs_p2);
+        self.get_mask_into(mask_p1);
+        self.get_mask_into(mask_p2);
+
+        (r1, r2, done, info)
+    }
+
+    fn obs_dim() -> usize {
+        TICTACTOE_OBS_DIM
+    }
+
+    fn action_dim() -> usize {
+        TICTACTOE_ACTION_DIM
+    }
+}
+
+// ============================================================================
+// 4. GameEnvDispatch - Type erasure enum for multiple games
+// ============================================================================
+
+#[derive(Clone)]
+#[allow(clippy::large_enum_variant)]
+enum GameEnvDispatch {
+    SimpleDuel(SimpleDuel),
+    TicTacToe(TicTacToe),
+}
+
+#[allow(dead_code)]
+impl GameEnvDispatch {
+    fn reset(&mut self) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
+        match self {
+            GameEnvDispatch::SimpleDuel(env) => env.reset(),
+            GameEnvDispatch::TicTacToe(env) => env.reset(),
+        }
+    }
+
+    fn step(
+        &mut self,
+        action_p1: usize,
+        action_p2: usize,
+    ) -> (
+        Vec<f32>,
+        Vec<f32>,
+        f32,
+        f32,
+        bool,
+        Vec<f32>,
+        Vec<f32>,
+        HashMap<String, f32>,
+    ) {
+        match self {
+            GameEnvDispatch::SimpleDuel(env) => env.step(action_p1, action_p2),
+            GameEnvDispatch::TicTacToe(env) => env.step(action_p1, action_p2),
+        }
+    }
+
+    fn reset_into(
+        &mut self,
+        obs_p1: &mut [f32],
+        obs_p2: &mut [f32],
+        mask_p1: &mut [f32],
+        mask_p2: &mut [f32],
+    ) {
+        match self {
+            GameEnvDispatch::SimpleDuel(env) => env.reset_into(obs_p1, obs_p2, mask_p1, mask_p2),
+            GameEnvDispatch::TicTacToe(env) => env.reset_into(obs_p1, obs_p2, mask_p1, mask_p2),
+        }
+    }
+
+    fn step_into(
+        &mut self,
+        action_p1: usize,
+        action_p2: usize,
+        obs_p1: &mut [f32],
+        obs_p2: &mut [f32],
+        mask_p1: &mut [f32],
+        mask_p2: &mut [f32],
+    ) -> (f32, f32, bool, GameInfo) {
+        match self {
+            GameEnvDispatch::SimpleDuel(env) => {
+                env.step_into(action_p1, action_p2, obs_p1, obs_p2, mask_p1, mask_p2)
+            }
+            GameEnvDispatch::TicTacToe(env) => {
+                env.step_into(action_p1, action_p2, obs_p1, obs_p2, mask_p1, mask_p2)
+            }
+        }
+    }
+
+    fn obs_dim(&self) -> usize {
+        match self {
+            GameEnvDispatch::SimpleDuel(_) => <SimpleDuel as GameEnv>::obs_dim(),
+            GameEnvDispatch::TicTacToe(_) => <TicTacToe as GameEnv>::obs_dim(),
+        }
+    }
+
+    fn action_dim(&self) -> usize {
+        match self {
+            GameEnvDispatch::SimpleDuel(_) => <SimpleDuel as GameEnv>::action_dim(),
+            GameEnvDispatch::TicTacToe(_) => <TicTacToe as GameEnv>::action_dim(),
+        }
+    }
+}
+
+// ============================================================================
+// 5. VectorizedEnv PyClass (backward compatible)
 // ============================================================================
 
 #[pyclass]
@@ -2077,9 +2459,231 @@ impl VectorizedEnvZeroCopy {
     }
 }
 
+// ============================================================================
+// 7. VectorizedEnvGeneric - Generic vectorized environment for any game
+// ============================================================================
+
+#[pyclass]
+pub struct VectorizedEnvGeneric {
+    envs: Vec<GameEnvDispatch>,
+    game_name: String,
+    obs_dim: usize,
+    action_dim: usize,
+    obs_buffer: Vec<f32>,
+    mask_buffer: Vec<f32>,
+    reward_buffer: Vec<f32>,
+    done_buffer: Vec<bool>,
+    info_buffer: Vec<GameInfo>,
+}
+
+#[pymethods]
+impl VectorizedEnvGeneric {
+    #[new]
+    fn new(game_name: &str, num_envs: usize) -> PyResult<Self> {
+        let (factory, obs_dim, action_dim) = GAME_REGISTRY.get(game_name).ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "Unknown game: '{}'. Available games: {:?}",
+                game_name,
+                GAME_REGISTRY.keys().collect::<Vec<_>>()
+            ))
+        })?;
+
+        let mut envs = Vec::with_capacity(num_envs);
+        for _ in 0..num_envs {
+            envs.push(factory());
+        }
+
+        Ok(VectorizedEnvGeneric {
+            envs,
+            game_name: game_name.to_string(),
+            obs_dim: *obs_dim,
+            action_dim: *action_dim,
+            obs_buffer: vec![0.0; 2 * num_envs * obs_dim],
+            mask_buffer: vec![0.0; 2 * num_envs * action_dim],
+            reward_buffer: vec![0.0; 2 * num_envs],
+            done_buffer: vec![false; num_envs],
+            info_buffer: vec![GameInfo::new(); num_envs],
+        })
+    }
+
+    fn reset<'py>(
+        &mut self,
+        py: Python<'py>,
+    ) -> (Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<f32>>) {
+        let n = self.envs.len();
+        let obs_dim = self.obs_dim;
+        let act_dim = self.action_dim;
+
+        let obs_ptr = SendPtr::new(self.obs_buffer.as_mut_ptr());
+        let mask_ptr = SendPtr::new(self.mask_buffer.as_mut_ptr());
+
+        self.envs.par_iter_mut().enumerate().for_each(|(i, env)| {
+            let p1_obs_start = i * obs_dim;
+            let p2_obs_start = (n + i) * obs_dim;
+            let p1_mask_start = i * act_dim;
+            let p2_mask_start = (n + i) * act_dim;
+
+            unsafe {
+                let obs_p1 =
+                    std::slice::from_raw_parts_mut(obs_ptr.as_ptr().add(p1_obs_start), obs_dim);
+                let obs_p2 =
+                    std::slice::from_raw_parts_mut(obs_ptr.as_ptr().add(p2_obs_start), obs_dim);
+                let mask_p1 =
+                    std::slice::from_raw_parts_mut(mask_ptr.as_ptr().add(p1_mask_start), act_dim);
+                let mask_p2 =
+                    std::slice::from_raw_parts_mut(mask_ptr.as_ptr().add(p2_mask_start), act_dim);
+
+                env.reset_into(obs_p1, obs_p2, mask_p1, mask_p2);
+            }
+        });
+
+        let py_obs = PyArray1::from_slice(py, &self.obs_buffer)
+            .reshape((2 * n, obs_dim))
+            .unwrap();
+        let py_mask = PyArray1::from_slice(py, &self.mask_buffer)
+            .reshape((2 * n, act_dim))
+            .unwrap();
+
+        (py_obs, py_mask)
+    }
+
+    fn step<'py>(
+        &mut self,
+        py: Python<'py>,
+        actions_p1: Vec<usize>,
+        actions_p2: Vec<usize>,
+    ) -> (
+        Bound<'py, PyArray2<f32>>,
+        Bound<'py, PyArray1<f32>>,
+        Bound<'py, PyArray1<bool>>,
+        Bound<'py, PyArray2<f32>>,
+        Bound<'py, PyList>,
+    ) {
+        let n = self.envs.len();
+        let obs_dim = self.obs_dim;
+        let act_dim = self.action_dim;
+
+        assert_eq!(actions_p1.len(), n);
+        assert_eq!(actions_p2.len(), n);
+
+        let obs_ptr = SendPtr::new(self.obs_buffer.as_mut_ptr());
+        let mask_ptr = SendPtr::new(self.mask_buffer.as_mut_ptr());
+        let reward_ptr = SendPtr::new(self.reward_buffer.as_mut_ptr());
+        let done_ptr = SendPtr::new(self.done_buffer.as_mut_ptr());
+        let info_ptr = SendPtr::new(self.info_buffer.as_mut_ptr());
+
+        self.envs
+            .par_iter_mut()
+            .enumerate()
+            .zip(actions_p1.par_iter().zip(actions_p2.par_iter()))
+            .for_each(|((i, env), (&a1, &a2))| {
+                let p1_obs_start = i * obs_dim;
+                let p2_obs_start = (n + i) * obs_dim;
+                let p1_mask_start = i * act_dim;
+                let p2_mask_start = (n + i) * act_dim;
+
+                unsafe {
+                    let obs_p1 =
+                        std::slice::from_raw_parts_mut(obs_ptr.as_ptr().add(p1_obs_start), obs_dim);
+                    let obs_p2 =
+                        std::slice::from_raw_parts_mut(obs_ptr.as_ptr().add(p2_obs_start), obs_dim);
+                    let mask_p1 = std::slice::from_raw_parts_mut(
+                        mask_ptr.as_ptr().add(p1_mask_start),
+                        act_dim,
+                    );
+                    let mask_p2 = std::slice::from_raw_parts_mut(
+                        mask_ptr.as_ptr().add(p2_mask_start),
+                        act_dim,
+                    );
+
+                    let (r1, r2, done, info) =
+                        env.step_into(a1, a2, obs_p1, obs_p2, mask_p1, mask_p2);
+
+                    *reward_ptr.as_ptr().add(i) = r1;
+                    *reward_ptr.as_ptr().add(n + i) = r2;
+                    *done_ptr.as_ptr().add(i) = done;
+                    *info_ptr.as_ptr().add(i) = info;
+
+                    if done {
+                        env.reset_into(obs_p1, obs_p2, mask_p1, mask_p2);
+                    }
+                }
+            });
+
+        let py_obs = PyArray1::from_slice(py, &self.obs_buffer)
+            .reshape((2 * n, obs_dim))
+            .unwrap();
+        let py_reward = PyArray1::from_slice(py, &self.reward_buffer);
+        let py_done = PyArray1::from_slice(py, &self.done_buffer);
+        let py_mask = PyArray1::from_slice(py, &self.mask_buffer)
+            .reshape((2 * n, act_dim))
+            .unwrap();
+
+        let py_info_list = PyList::empty(py);
+        for info in &self.info_buffer {
+            let py_dict = PyDict::new(py);
+            if info.is_terminal {
+                py_dict.set_item("p1_win", info.p1_win).unwrap();
+                py_dict.set_item("p2_win", info.p2_win).unwrap();
+                py_dict.set_item("draw", info.draw).unwrap();
+                py_dict.set_item("p1_attacks", info.p1_attacks).unwrap();
+                py_dict.set_item("p2_attacks", info.p2_attacks).unwrap();
+                py_dict.set_item("p1_damage", info.p1_damage).unwrap();
+                py_dict.set_item("p2_damage", info.p2_damage).unwrap();
+                py_dict.set_item("steps", info.steps).unwrap();
+            }
+            py_info_list.append(py_dict).unwrap();
+        }
+
+        (py_obs, py_reward, py_done, py_mask, py_info_list)
+    }
+
+    fn obs_dim(&self) -> usize {
+        self.obs_dim
+    }
+
+    fn action_dim(&self) -> usize {
+        self.action_dim
+    }
+
+    fn game_name(&self) -> &str {
+        &self.game_name
+    }
+}
+
+// ============================================================================
+// 8. PyO3 Factory Functions
+// ============================================================================
+
+#[pyfunction]
+fn create_env(game_name: &str, num_envs: usize) -> PyResult<VectorizedEnvGeneric> {
+    VectorizedEnvGeneric::new(game_name, num_envs)
+}
+
+#[pyfunction]
+fn list_games() -> Vec<&'static str> {
+    GAME_REGISTRY.keys().copied().collect()
+}
+
+#[pyfunction]
+fn get_game_info(game_name: &str) -> PyResult<(usize, usize)> {
+    let (_, obs_dim, action_dim) = GAME_REGISTRY.get(game_name).ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "Unknown game: '{}'. Available games: {:?}",
+            game_name,
+            GAME_REGISTRY.keys().collect::<Vec<_>>()
+        ))
+    })?;
+    Ok((*obs_dim, *action_dim))
+}
+
 #[pymodule]
 fn high_perf_env(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<VectorizedEnv>()?;
     m.add_class::<VectorizedEnvZeroCopy>()?;
+    m.add_class::<VectorizedEnvGeneric>()?;
+    m.add_function(wrap_pyfunction!(create_env, m)?)?;
+    m.add_function(wrap_pyfunction!(list_games, m)?)?;
+    m.add_function(wrap_pyfunction!(get_game_info, m)?)?;
     Ok(())
 }
