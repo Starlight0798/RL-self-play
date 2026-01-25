@@ -5,7 +5,8 @@ import numpy as np
 from collections import deque
 import copy
 from .base import BaseAlgorithm
-from model import ActorCritic
+from models.registry import get_model, get_model_class
+from .registry import register_algorithm
 
 
 class RewardShaper:
@@ -22,9 +23,9 @@ class RewardShaper:
         self.device = device
 
         # 奖励系数 (可调整)
-        self.hp_advantage_coef = 0.1      # HP 优势奖励
+        self.hp_advantage_coef = 0.1  # HP 优势奖励
         self.resource_control_coef = 0.05  # 资源控制奖励
-        self.positioning_coef = 0.02       # 位置优势奖励
+        self.positioning_coef = 0.02  # 位置优势奖励
         self.action_diversity_coef = 0.01  # 动作多样性奖励
 
         # 常量
@@ -89,6 +90,61 @@ class RewardShaper:
 
         return shaped_reward
 
+    def compute_shaped_reward_batch(
+        self,
+        obs: torch.Tensor,
+        next_obs: torch.Tensor,
+        actions: torch.Tensor,
+        base_rewards: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Vectorized reward shaping for entire rollout buffer.
+
+        Args:
+            obs: [T, B, obs_dim] - observations
+            next_obs: [T, B, obs_dim] - next observations
+            actions: [T, B] - actions taken
+            base_rewards: [T, B] - base rewards
+
+        Returns:
+            shaped_rewards: [T, B] - shaped rewards
+        """
+        T, B = base_rewards.shape
+        shaped_rewards = base_rewards.clone()
+
+        # Parse observations (vectorized across T and B)
+        my_hp = obs[..., 4] * self.max_hp
+        enemy_hp = obs[..., 5] * self.max_hp
+        my_energy = obs[..., 6] * self.max_energy
+        my_shield = obs[..., 8] * self.max_shield
+
+        next_my_hp = next_obs[..., 4] * self.max_hp
+        next_enemy_hp = next_obs[..., 5] * self.max_hp
+        next_my_shield = next_obs[..., 8] * self.max_shield
+
+        # HP advantage shaping (vectorized)
+        hp_diff_current = (my_hp - enemy_hp) / self.max_hp
+        hp_diff_next = (next_my_hp - next_enemy_hp) / self.max_hp
+        hp_shaping = self.hp_advantage_coef * (hp_diff_next - hp_diff_current)
+        shaped_rewards += hp_shaping
+
+        # Energy waste penalty (vectorized)
+        energy_full = (my_energy >= self.max_energy - 0.5).float()
+        stayed_still = (actions == 0).float()
+        energy_waste_penalty = -0.02 * energy_full * stayed_still
+        shaped_rewards += energy_waste_penalty
+
+        # Shield bonus (vectorized)
+        shield_gained = (next_my_shield > my_shield).float()
+        shield_bonus = 0.05 * shield_gained
+        shaped_rewards += shield_bonus
+
+        # Survival bonus (vectorized)
+        survival_bonus = 0.001 * torch.ones_like(base_rewards)
+        shaped_rewards += survival_bonus
+
+        return shaped_rewards
+
 
 class OpponentPool:
     """
@@ -100,7 +156,7 @@ class OpponentPool:
     3. 防止策略遗忘
     """
 
-    def __init__(self, max_size=10, device='cpu'):
+    def __init__(self, max_size=10, device="cpu"):
         self.max_size = max_size
         self.device = device
         self.pool = deque(maxlen=max_size)
@@ -151,53 +207,55 @@ class OpponentPool:
         return len(self.pool)
 
 
+@register_algorithm("ppo")
 class PPO(BaseAlgorithm):
-    """
-    优化的 PPO 算法
-
-    改进点:
-    1. 奖励塑形
-    2. 学习率调度 (线性衰减 / 余弦退火)
-    3. KL 散度早停
-    4. 梯度累积
-    5. 价值函数预热
-    6. 对手池采样
-    """
-
-    def __init__(self, config, obs_dim, action_dim):
+    def __init__(self, config, obs_dim, action_dim, model_name: str = "actor_critic"):
         self.config = config
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.device = config.device
 
-        # 模型
-        self.model = ActorCritic(obs_dim, action_dim).to(self.device)
+        self.model = get_model(model_name, obs_dim=obs_dim, action_dim=action_dim).to(
+            self.device
+        )
+        self.model_name = model_name
+        self.model_class = get_model_class(model_name)
+
+        self.use_amp = getattr(config, "use_amp", False) and torch.cuda.is_available()
+        self.use_compile = getattr(config, "use_compile", False)
+        self.compile_mode = getattr(config, "compile_mode", "default")
+
+        if self.use_amp:
+            self.scaler = torch.cuda.amp.GradScaler()
+        else:
+            self.scaler = None
+
+        if self.use_compile and hasattr(torch, "compile"):
+            self.model = torch.compile(self.model, mode=self.compile_mode)
 
         # 优化器 (AdamW 更好的正则化)
         self.optimizer = optim.AdamW(
             self.model.parameters(),
             lr=config.learning_rate,
             eps=1e-5,
-            weight_decay=1e-4
+            weight_decay=1e-4,
         )
 
         # 学习率调度器
         self.lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer,
-            T_max=config.train_steps,
-            eta_min=config.learning_rate * 0.1
+            self.optimizer, T_max=config.train_steps, eta_min=config.learning_rate * 0.1
         )
 
         # 奖励塑形器
         self.reward_shaper = RewardShaper(self.device)
-        self.use_reward_shaping = getattr(config, 'use_reward_shaping', True)
+        self.use_reward_shaping = getattr(config, "use_reward_shaping", True)
 
         # 对手池
         self.opponent_pool = OpponentPool(max_size=10, device=self.device)
-        self.use_opponent_pool = getattr(config, 'use_opponent_pool', False)
+        self.use_opponent_pool = getattr(config, "use_opponent_pool", False)
 
         # KL 散度目标 (用于自适应调整)
-        self.target_kl = getattr(config, 'target_kl', 0.02)
+        self.target_kl = getattr(config, "target_kl", 0.02)
 
         # 训练步数追踪 (用于学习率调度和保存)
         self.training_step = 0
@@ -236,11 +294,7 @@ class PPO(BaseAlgorithm):
                     logits = logits + (mask - 1.0) * 1e8
                 action = logits.argmax(dim=-1)
 
-        info = {
-            "logprob": logprob,
-            "value": value,
-            "entropy": entropy
-        }
+        info = {"logprob": logprob, "value": value, "entropy": entropy}
         return action, info
 
     def get_value(self, obs):
@@ -279,10 +333,10 @@ class PPO(BaseAlgorithm):
         # ============ 奖励塑形 (可选) ============
         if self.use_reward_shaping and len(self.next_obs_buffer) == num_steps:
             b_next_obs = torch.stack(self.next_obs_buffer)
-            for t in range(num_steps):
-                b_rewards[t] = self.reward_shaper.compute_shaped_reward(
-                    b_obs[t], b_next_obs[t], b_actions[t], b_rewards[t]
-                )
+            # Use vectorized reward shaping
+            b_rewards = self.reward_shaper.compute_shaped_reward_batch(
+                b_obs, b_next_obs, b_actions, b_rewards
+            )
 
         # ============ 计算 GAE ============
         with torch.no_grad():
@@ -298,8 +352,12 @@ class PPO(BaseAlgorithm):
 
                 nonterminal = 1.0 - b_dones[t].float()
 
-                delta = b_rewards[t] + config.gamma * nextvalues * nonterminal - b_values[t]
-                advantages[t] = lastgaelam = delta + config.gamma * config.gae_lambda * nonterminal * lastgaelam
+                delta = (
+                    b_rewards[t] + config.gamma * nextvalues * nonterminal - b_values[t]
+                )
+                advantages[t] = lastgaelam = (
+                    delta + config.gamma * config.gae_lambda * nonterminal * lastgaelam
+                )
 
             returns = advantages + b_values
 
@@ -328,9 +386,7 @@ class PPO(BaseAlgorithm):
                 mb_inds = b_inds[start:end]
 
                 _, newlogprob, entropy, newvalue = self.model.get_action_and_value(
-                    b_obs[mb_inds],
-                    b_mask[mb_inds],
-                    b_actions[mb_inds]
+                    b_obs[mb_inds], b_mask[mb_inds], b_actions[mb_inds]
                 )
 
                 logratio = newlogprob - b_logprobs[mb_inds]
@@ -339,18 +395,24 @@ class PPO(BaseAlgorithm):
                 with torch.no_grad():
                     old_approx_kl = (-logratio).mean()
                     approx_kl = ((ratio - 1) - logratio).mean()
-                    clipfracs.append(((ratio - 1.0).abs() > config.clip_coef).float().mean().item())
+                    clipfracs.append(
+                        ((ratio - 1.0).abs() > config.clip_coef).float().mean().item()
+                    )
                     epoch_kl += approx_kl.item()
                     num_batches += 1
 
                 mb_advantages = b_advantages[mb_inds]
 
                 # Advantage Normalization (per-minibatch)
-                mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
+                mb_advantages = (mb_advantages - mb_advantages.mean()) / (
+                    mb_advantages.std() + 1e-8
+                )
 
                 # Policy Loss (Clipped)
                 pg_loss1 = -mb_advantages * ratio
-                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - config.clip_coef, 1 + config.clip_coef)
+                pg_loss2 = -mb_advantages * torch.clamp(
+                    ratio, 1 - config.clip_coef, 1 + config.clip_coef
+                )
                 pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
                 # Value Loss (Clipped)
@@ -369,13 +431,25 @@ class PPO(BaseAlgorithm):
                 entropy_loss = entropy.mean()
 
                 # Total Loss
-                loss = pg_loss - config.ent_coef * entropy_loss + v_loss * config.vf_coef
+                loss = (
+                    pg_loss - config.ent_coef * entropy_loss + v_loss * config.vf_coef
+                )
 
-                # Backward
                 self.optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(self.model.parameters(), config.max_grad_norm)
-                self.optimizer.step()
+                if self.use_amp:
+                    self.scaler.scale(loss).backward()
+                    self.scaler.unscale_(self.optimizer)
+                    nn.utils.clip_grad_norm_(
+                        self.model.parameters(), config.max_grad_norm
+                    )
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(
+                        self.model.parameters(), config.max_grad_norm
+                    )
+                    self.optimizer.step()
 
             # KL 早停
             avg_kl = epoch_kl / max(num_batches, 1)
@@ -386,13 +460,13 @@ class PPO(BaseAlgorithm):
         self.lr_scheduler.step()
 
         # 记录结果
-        results['loss'] = loss.item()
-        results['pg_loss'] = pg_loss.item()
-        results['v_loss'] = v_loss.item()
-        results['entropy_loss'] = entropy_loss.item()
-        results['approx_kl'] = approx_kl.item()
-        results['clipfrac'] = np.mean(clipfracs)
-        results['lr'] = self.optimizer.param_groups[0]['lr']
+        results["loss"] = loss.item()
+        results["pg_loss"] = pg_loss.item()
+        results["v_loss"] = v_loss.item()
+        results["entropy_loss"] = entropy_loss.item()
+        results["approx_kl"] = approx_kl.item()
+        results["clipfrac"] = np.mean(clipfracs)
+        results["lr"] = self.optimizer.param_groups[0]["lr"]
 
         # 定期保存到对手池
         if self.use_opponent_pool and self.training_step % 50 == 0:
@@ -416,10 +490,10 @@ class PPO(BaseAlgorithm):
     def save(self, path):
         """保存模型和训练状态"""
         checkpoint = {
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'scheduler_state_dict': self.lr_scheduler.state_dict(),
-            'training_step': self.training_step,
+            "model_state_dict": self.model.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "scheduler_state_dict": self.lr_scheduler.state_dict(),
+            "training_step": self.training_step,
         }
         torch.save(checkpoint, path)
         self.checkpoint_path = path
@@ -428,14 +502,14 @@ class PPO(BaseAlgorithm):
         """加载模型和训练状态"""
         checkpoint = torch.load(path, map_location=self.device)
 
-        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-            self.model.load_state_dict(checkpoint['model_state_dict'])
-            if 'optimizer_state_dict' in checkpoint:
-                self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            if 'scheduler_state_dict' in checkpoint:
-                self.lr_scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-            if 'training_step' in checkpoint:
-                self.training_step = checkpoint['training_step']
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+            self.model.load_state_dict(checkpoint["model_state_dict"])
+            if "optimizer_state_dict" in checkpoint:
+                self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            if "scheduler_state_dict" in checkpoint:
+                self.lr_scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            if "training_step" in checkpoint:
+                self.training_step = checkpoint["training_step"]
         else:
             # 兼容旧格式
             self.model.load_state_dict(checkpoint)
@@ -446,5 +520,8 @@ class PPO(BaseAlgorithm):
         """从对手池获取对手"""
         if len(self.opponent_pool) == 0:
             return None
-        opponent, idx = self.opponent_pool.sample(ActorCritic, self.obs_dim, self.action_dim)
+        # 使用 self.model_class
+        opponent, idx = self.opponent_pool.sample(
+            self.model_class, self.obs_dim, self.action_dim
+        )
         return opponent
