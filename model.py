@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import numpy as np
+from models.registry import register_model
+
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
@@ -10,6 +12,7 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 
 class ResidualBlock(nn.Module):
     """残差块，帮助训练更深的网络"""
+
     def __init__(self, hidden_dim):
         super().__init__()
         self.fc1 = layer_init(nn.Linear(hidden_dim, hidden_dim))
@@ -27,6 +30,7 @@ class ResidualBlock(nn.Module):
 
 class SpatialEncoder(nn.Module):
     """空间特征编码器 - 用于处理 12x12 地形网格"""
+
     def __init__(self, grid_size=12, grid_channels=1, output_dim=64):
         super().__init__()
         self.grid_size = grid_size
@@ -45,6 +49,7 @@ class SpatialEncoder(nn.Module):
         return self.encoder(grid_flat)
 
 
+@register_model("actor_critic")
 class ActorCritic(nn.Module):
     """
     改进的 Actor-Critic 网络:
@@ -54,6 +59,7 @@ class ActorCritic(nn.Module):
     4. Layer Normalization
     5. GELU 激活函数
     """
+
     def __init__(self, obs_dim, action_dim, hidden_dim=256):
         super().__init__()
 
@@ -65,10 +71,7 @@ class ActorCritic(nn.Module):
         self.grid_dim = obs_dim - self.state_dim  # 144
 
         # 空间编码器
-        self.spatial_encoder = SpatialEncoder(
-            grid_size=12,
-            output_dim=64
-        )
+        self.spatial_encoder = SpatialEncoder(grid_size=12, output_dim=64)
 
         # 状态特征编码器
         self.state_encoder = nn.Sequential(
@@ -102,8 +105,8 @@ class ActorCritic(nn.Module):
     def _encode_obs(self, x):
         """编码观测"""
         # 分离状态特征和空间特征
-        state_features = x[:, :self.state_dim]  # [B, 16]
-        grid_features = x[:, self.state_dim:]   # [B, 144]
+        state_features = x[:, : self.state_dim]  # [B, 16]
+        grid_features = x[:, self.state_dim :]  # [B, 144]
 
         # 编码
         state_encoded = self.state_encoder(state_features)  # [B, 64]
@@ -142,12 +145,14 @@ class ActorCritic(nn.Module):
         return action, probs.log_prob(action), probs.entropy(), value
 
 
+@register_model("dueling_actor_critic")
 class DuelingActorCritic(nn.Module):
     """
     Dueling 架构的 Actor-Critic:
     - Actor 使用 Advantage 分解
     - 更稳定的价值估计
     """
+
     def __init__(self, obs_dim, action_dim, hidden_dim=256):
         super().__init__()
 
@@ -188,8 +193,8 @@ class DuelingActorCritic(nn.Module):
         )
 
     def _encode_obs(self, x):
-        state_features = x[:, :self.state_dim]
-        grid_features = x[:, self.state_dim:]
+        state_features = x[:, : self.state_dim]
+        grid_features = x[:, self.state_dim :]
         state_encoded = self.state_encoder(state_features)
         spatial_encoded = self.spatial_encoder(grid_features)
         return torch.cat([state_encoded, spatial_encoded], dim=-1)
