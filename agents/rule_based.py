@@ -1,7 +1,10 @@
 import torch
 import numpy as np
 import random
+from .registry import register_rule_agent
 
+
+@register_rule_agent("simple_duel")
 class RuleBasedAgent:
     def __init__(self, device="cpu"):
         self.device = device
@@ -36,11 +39,20 @@ class RuleBasedAgent:
         MAX_AMMO = 6.0
 
         # De-normalize helpers
-        def denorm_pos(val): return int(round(val * (MAP_SIZE - 1)))
-        def denorm_hp(val): return val * MAX_HP
-        def denorm_eng(val): return val * MAX_ENERGY
-        def denorm_shield(val): return int(round(val * MAX_SHIELD))
-        def denorm_ammo(val): return int(round(val * MAX_AMMO))
+        def denorm_pos(val):
+            return int(round(val * (MAP_SIZE - 1)))
+
+        def denorm_hp(val):
+            return val * MAX_HP
+
+        def denorm_eng(val):
+            return val * MAX_ENERGY
+
+        def denorm_shield(val):
+            return int(round(val * MAX_SHIELD))
+
+        def denorm_ammo(val):
+            return int(round(val * MAX_AMMO))
 
         # Action indices
         ACT_STAY = 0
@@ -175,8 +187,12 @@ class RuleBasedAgent:
                     # Simple Flee: Maximize distance
                     best_move = 0
                     max_d = dist
-                    moves = [(ACT_UP, (0, 1)), (ACT_DOWN, (0, -1)),
-                             (ACT_LEFT, (-1, 0)), (ACT_RIGHT, (1, 0))]
+                    moves = [
+                        (ACT_UP, (0, 1)),
+                        (ACT_DOWN, (0, -1)),
+                        (ACT_LEFT, (-1, 0)),
+                        (ACT_RIGHT, (1, 0)),
+                    ]
                     for ma, (dx, dy) in moves:
                         if m[ma] > 0.5:
                             nx, ny = mx + dx, my + dy
@@ -226,12 +242,16 @@ class RuleBasedAgent:
                                     best_target = (cx, cy)
                                     best_path_to_target = path
                                 elif score == best_score:
-                                    if best_path_to_target and len(path) < len(best_path_to_target):
+                                    if best_path_to_target and len(path) < len(
+                                        best_path_to_target
+                                    ):
                                         best_path_to_target = path
                                         best_target = (cx, cy)
 
                         # Neighbors
-                        for ma, (dx, dy) in enumerate([(0, 1), (0, -1), (-1, 0), (1, 0)], 1):
+                        for ma, (dx, dy) in enumerate(
+                            [(0, 1), (0, -1), (-1, 0), (1, 0)], 1
+                        ):
                             nx, ny = cx + dx, cy + dy
                             if 0 <= nx < MAP_SIZE and 0 <= ny < MAP_SIZE:
                                 if not is_wall(nx, ny) and (nx, ny) not in visited:
@@ -264,7 +284,9 @@ class RuleBasedAgent:
                     if len(path) > 10:
                         continue
 
-                    for ma, (dx, dy) in enumerate([(0, 1), (0, -1), (-1, 0), (1, 0)], 1):
+                    for ma, (dx, dy) in enumerate(
+                        [(0, 1), (0, -1), (-1, 0), (1, 0)], 1
+                    ):
                         nx, ny = cx + dx, cy + dy
                         if 0 <= nx < MAP_SIZE and 0 <= ny < MAP_SIZE:
                             if not is_wall(nx, ny) and (nx, ny) not in visited:

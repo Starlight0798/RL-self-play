@@ -61,18 +61,26 @@ class ActorCritic(nn.Module):
     5. GELU 激活函数
     """
 
-    def __init__(self, obs_dim, action_dim, hidden_dim=256):
+    def __init__(
+        self,
+        obs_dim: int,
+        action_dim: int,
+        hidden_dim: int = 256,
+        state_dim: int = 16,
+        grid_size: int = 12,
+    ):
         super().__init__()
 
         self.obs_dim = obs_dim
         self.action_dim = action_dim
 
-        # 状态特征维度: 前 16 维是数值特征
-        self.state_dim = 16
+        # 状态特征维度: 前 state_dim 维是数值特征
+        self.state_dim = state_dim
+        self.grid_size = grid_size
         self.grid_dim = obs_dim - self.state_dim  # 144
 
         # 空间编码器
-        self.spatial_encoder = SpatialEncoder(grid_size=12, output_dim=64)
+        self.spatial_encoder = SpatialEncoder(grid_size=grid_size, output_dim=64)
 
         # 状态特征编码器
         self.state_encoder = nn.Sequential(
@@ -106,12 +114,12 @@ class ActorCritic(nn.Module):
     def _encode_obs(self, x):
         """编码观测"""
         # 分离状态特征和空间特征
-        state_features = x[:, : self.state_dim]  # [B, 16]
-        grid_features = x[:, self.state_dim :]  # [B, 144]
+        state_features = x[:, : self.state_dim]
+        grid_features = x[:, self.state_dim :]
 
         # 编码
-        state_encoded = self.state_encoder(state_features)  # [B, 64]
-        spatial_encoded = self.spatial_encoder(grid_features)  # [B, 64]
+        state_encoded = self.state_encoder(state_features)
+        spatial_encoded = self.spatial_encoder(grid_features)
 
         # 融合
         fused = torch.cat([state_encoded, spatial_encoded], dim=-1)  # [B, 128]
@@ -154,16 +162,24 @@ class DuelingActorCritic(nn.Module):
     - 更稳定的价值估计
     """
 
-    def __init__(self, obs_dim, action_dim, hidden_dim=256):
+    def __init__(
+        self,
+        obs_dim: int,
+        action_dim: int,
+        hidden_dim: int = 256,
+        state_dim: int = 16,
+        grid_size: int = 12,
+    ):
         super().__init__()
 
         self.obs_dim = obs_dim
         self.action_dim = action_dim
-        self.state_dim = 16
+        self.state_dim = state_dim
+        self.grid_size = grid_size
         self.grid_dim = obs_dim - self.state_dim
 
         # 空间编码器
-        self.spatial_encoder = SpatialEncoder(grid_size=12, output_dim=64)
+        self.spatial_encoder = SpatialEncoder(grid_size=grid_size, output_dim=64)
 
         # 状态特征编码器
         self.state_encoder = nn.Sequential(
@@ -395,4 +411,9 @@ def create_model_for_game(
         else:
             model_name = "simple_mlp"
 
-    return get_model(model_name, obs_dim=obs_dim, action_dim=action_dim)
+    kwargs = {}
+    if game_name == "simple_duel":
+        kwargs["state_dim"] = 16
+        kwargs["grid_size"] = 12
+
+    return get_model(model_name, obs_dim=obs_dim, action_dim=action_dim, **kwargs)
