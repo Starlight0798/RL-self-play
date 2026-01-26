@@ -1,5 +1,6 @@
 import torch
 from dataclasses import dataclass, field
+from typing import List
 
 
 @dataclass
@@ -9,9 +10,15 @@ class GameConfig:
     name: str = "simple_duel"
     obs_dim: int = 160
     action_dim: int = 13
+    action_names: List[str] = field(default_factory=list)
 
     # Game-specific reward shaping (optional)
     use_reward_shaping: bool = True
+
+    def get_action_name(self, action_id: int) -> str:
+        if 0 <= action_id < len(self.action_names):
+            return self.action_names[action_id]
+        return str(action_id)
 
     @classmethod
     def from_name(cls, name: str) -> "GameConfig":
@@ -33,6 +40,7 @@ class GameConfig:
                 name=name,
                 obs_dim=info.obs_dim,
                 action_dim=info.action_dim,
+                action_names=[str(i) for i in range(info.action_dim)],
                 use_reward_shaping=False,
             )
         except Exception:
@@ -46,6 +54,23 @@ class SimpleDuelConfig(GameConfig):
     name: str = "simple_duel"
     obs_dim: int = 160
     action_dim: int = 13
+    action_names: List[str] = field(
+        default_factory=lambda: [
+            "Stay",
+            "Up",
+            "Down",
+            "Left",
+            "Right",
+            "Attack",
+            "Shoot",
+            "Dodge",
+            "Shield",
+            "Dash",
+            "AOE",
+            "Heal",
+            "Reload",
+        ]
+    )
     use_reward_shaping: bool = True
 
     # SimpleDuel-specific
@@ -63,6 +88,7 @@ class TicTacToeConfig(GameConfig):
     name: str = "tictactoe"
     obs_dim: int = 27
     action_dim: int = 9
+    action_names: List[str] = field(default_factory=lambda: [str(i) for i in range(9)])
     use_reward_shaping: bool = False  # Simple win/lose rewards
 
     # TicTacToe-specific
@@ -76,6 +102,7 @@ class Connect4Config(GameConfig):
     name: str = "connect4"
     obs_dim: int = 126
     action_dim: int = 7
+    action_names: List[str] = field(default_factory=lambda: [str(i) for i in range(7)])
     use_reward_shaping: bool = False
 
 
@@ -86,6 +113,7 @@ class ReversiConfig(GameConfig):
     name: str = "reversi"
     obs_dim: int = 192
     action_dim: int = 64
+    action_names: List[str] = field(default_factory=lambda: [str(i) for i in range(64)])
     use_reward_shaping: bool = False
 
 
