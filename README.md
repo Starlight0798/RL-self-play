@@ -140,13 +140,16 @@ python watch.py --p1 rule --p2 rule
 ┌─────────────────────────────────────────────────────┐
 │                    Rust Layer                        │
 │  ┌──────────────────────────────────────────────┐   │
-│  │              src/lib.rs                       │   │
-│  │  ┌────────────┐  ┌─────────────────────────┐ │   │
-│  │  │ GameEnv    │  │ SimpleDuel              │ │   │
-│  │  │  (Trait)   │  │  - 12x12 战术地图        │ │   │
-│  │  └────────────┘  │  - 13 种动作            │ │   │
-│  │                  │  - 地形/道具系统         │ │   │
-│  │                  └─────────────────────────┘ │   │
+│  │  src/                                         │   │
+│  │  ├── lib.rs         # 入口 + PyO3 绑定        │   │
+│  │  ├── traits.rs      # GameEnv trait 定义      │   │
+│  │  ├── registry.rs    # 游戏注册表              │   │
+│  │  ├── vectorized.rs  # 向量化环境              │   │
+│  │  └── games/                                   │   │
+│  │      ├── simple_duel.rs  # 12x12 战术对战     │   │
+│  │      ├── tictactoe.rs    # 井字棋             │   │
+│  │      ├── connect4.rs     # 四子棋             │   │
+│  │      └── reversi.rs      # 黑白棋             │   │
 │  │  ┌────────────────────────────────────────┐  │   │
 │  │  │ Rayon 并行处理 N 个环境实例             │  │   │
 │  │  └────────────────────────────────────────┘  │   │
@@ -189,7 +192,16 @@ P1 视角 (物理坐标):          P2 视角 (变换后):
 ```
 RL-self-play/
 ├── src/
-│   └── lib.rs          # Rust 环境实现
+│   ├── lib.rs          # Rust 入口 + PyO3 绑定
+│   ├── traits.rs       # GameEnv, GameEnvZeroCopy trait
+│   ├── registry.rs     # 游戏注册表
+│   ├── vectorized.rs   # 向量化环境实现
+│   └── games/
+│       ├── mod.rs
+│       ├── simple_duel.rs  # 12x12 战术对战
+│       ├── tictactoe.rs    # 井字棋
+│       ├── connect4.rs     # 四子棋
+│       └── reversi.rs      # 黑白棋
 ├── algorithms/
 │   ├── base.py         # 算法基类
 │   └── ppo.py          # PPO 算法
@@ -201,7 +213,7 @@ RL-self-play/
 ├── config.py           # 训练配置
 ├── utils.py            # 工具函数
 ├── Cargo.toml          # Rust 依赖
-├── CLAUDE.md           # Claude Code 指导
+├── AGENTS.md           # AI Agent 指导
 └── README.md           # 本文件
 ```
 
@@ -220,12 +232,25 @@ RL-self-play/
 
 ## 扩展
 
+### 支持的游戏
+
+| 游戏 | 说明 | OBS_DIM | ACTION_DIM |
+|------|------|---------|------------|
+| simple_duel | 12x12 战术对战 | 160 | 13 |
+| tictactoe | 井字棋 | 27 | 9 |
+| connect4 | 四子棋 | 126 | 7 |
+| reversi | 黑白棋 | 195 | 65 |
+
 ### 添加新游戏
 
-实现 `GameEnv` trait：
+1. 在 `src/games/` 下创建新文件，实现 `GameEnv` 和 `GameEnvZeroCopy` trait：
 
 ```rust
-pub trait GameEnv: Send + Sync + Clone {
+use crate::traits::{GameEnv, GameEnvZeroCopy, GameInfo};
+
+pub struct MyGame { /* ... */ }
+
+impl GameEnv for MyGame {
     fn new() -> Self;
     fn reset(&mut self) -> (obs_p1, obs_p2, mask_p1, mask_p2);
     fn step(&mut self, action_p1, action_p2) -> (obs, rewards, done, masks, info);
@@ -233,6 +258,9 @@ pub trait GameEnv: Send + Sync + Clone {
     fn action_dim() -> usize;
 }
 ```
+
+2. 在 `src/games/mod.rs` 中添加模块声明
+3. 在 `src/registry.rs` 的 `GAME_REGISTRY` 中注册游戏
 
 关键要求：
 1. 观测必须对称（P2 视角需要变换）
