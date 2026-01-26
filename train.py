@@ -25,22 +25,13 @@ def train(args, config=None):
     # 初始化环境
     env = create_env(args.game, config.num_envs)
 
+    # Select model
+    model_name = args.model or (
+        "actor_critic" if args.game == "simple_duel" else "simple_mlp"
+    )
+
     # 初始化算法
     from algorithms.base import BaseAlgorithm
-    from games.registry import get_game
-
-    # Get game plugin and shaper
-    game_plugin = get_game(args.game)
-
-    # Select model
-    if args.model:
-        model_name = args.model
-    else:
-        model_name = getattr(game_plugin.config, "default_model_name", "simple_mlp")
-
-    reward_shaper = None
-    if hasattr(game_plugin, "shaper") and game_plugin.shaper:
-        reward_shaper = game_plugin.shaper(config.device)
 
     algo: BaseAlgorithm = get_algorithm(
         args.algorithm,
@@ -48,7 +39,6 @@ def train(args, config=None):
         obs_dim=obs_dim,
         action_dim=action_dim,
         model_name=model_name,
-        reward_shaper=reward_shaper,
     )
 
     # 初始化规则模型 (仅用于 simple_duel 评估)
@@ -241,9 +231,7 @@ def train(args, config=None):
                 if args.game == "simple_duel":
                     print(f"  >> Generating replay...")
                     opponent = rule_agent if config.eval_opponent == "rule" else algo
-                    render_ascii_game_to_file(
-                        algo, opponent, config, args.game, "replays"
-                    )
+                    render_ascii_game_to_file(algo, opponent, config, "replays")
 
             # -----------------------------------------------------------------
             # 5. Save Checkpoint
