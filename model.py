@@ -225,6 +225,99 @@ class DuelingActorCritic(nn.Module):
         return action, probs.log_prob(action), probs.entropy(), value
 
 
+@register_model("cnn")
+class CNNActorCritic(nn.Module):
+    """CNN Actor-Critic for board games (Connect4, Reversi). Expects obs as flattened 3-channel board."""
+
+    def __init__(
+        self,
+        obs_dim: int,
+        action_dim: int,
+        board_shape: tuple[int, int] = (6, 7),
+        hidden_dim: int = 128,
+        num_channels: int = 3,
+    ):
+        super().__init__()
+        self.obs_dim = obs_dim
+        self.action_dim = action_dim
+        self.board_shape = board_shape
+        self.num_channels = num_channels
+        rows, cols = board_shape
+
+        expected_obs_dim = rows * cols * num_channels
+        if obs_dim != expected_obs_dim:
+            raise ValueError(
+                f"obs_dim ({obs_dim}) != rows*cols*channels ({expected_obs_dim})"
+            )
+
+        self.conv_layers = nn.Sequential(
+            nn.Conv2d(num_channels, 32, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+        )
+
+        conv_output_size = 64 * rows * cols
+
+        self.backbone = nn.Sequential(
+            layer_init(nn.Linear(conv_output_size, hidden_dim)),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            layer_init(nn.Linear(hidden_dim, hidden_dim)),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+        )
+
+        self.actor = layer_init(nn.Linear(hidden_dim, action_dim), std=0.01)
+        self.critic = layer_init(nn.Linear(hidden_dim, 1), std=1.0)
+
+    def _encode_obs(self, obs: torch.Tensor) -> torch.Tensor:
+        batch_size = obs.shape[0]
+        rows, cols = self.board_shape
+        x = obs.view(batch_size, self.num_channels, rows, cols)
+        x = self.conv_layers(x)
+        x = x.view(batch_size, -1)
+        return self.backbone(x)
+
+    def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        features = self._encode_obs(obs)
+        logits = self.actor(features)
+        value = self.critic(features)
+        return logits, value
+
+    def get_action_and_value(
+        self,
+        obs: torch.Tensor,
+        action_mask: torch.Tensor,
+        action: torch.Tensor | None = None,
+        deterministic: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        features = self._encode_obs(obs)
+        logits = self.actor(features)
+
+        masked_logits = logits.clone()
+        masked_logits[action_mask == 0] = -1e8
+
+        probs = Categorical(logits=masked_logits)
+
+        if action is None:
+            if deterministic:
+                action = masked_logits.argmax(dim=-1)
+            else:
+                action = probs.sample()
+
+        assert action is not None
+        value = self.critic(features)
+
+        return action, probs.log_prob(action), probs.entropy(), value.squeeze(-1)
+
+    def get_value(self, obs: torch.Tensor) -> torch.Tensor:
+        features = self._encode_obs(obs)
+        return self.critic(features).squeeze(-1)
+
+
 @register_model("simple_mlp")
 class SimpleMLP(nn.Module):
     """Simple MLP actor-critic for small observation spaces."""
