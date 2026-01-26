@@ -19,6 +19,8 @@ class GameConfig:
         configs = {
             "simple_duel": SimpleDuelConfig,
             "tictactoe": TicTacToeConfig,
+            "connect4": Connect4Config,
+            "reversi": ReversiConfig,
         }
         if name in configs:
             return configs[name]()
@@ -65,6 +67,26 @@ class TicTacToeConfig(GameConfig):
 
     # TicTacToe-specific
     board_size: int = 3
+
+
+@dataclass
+class Connect4Config(GameConfig):
+    """Configuration for Connect4 game."""
+
+    name: str = "connect4"
+    obs_dim: int = 126
+    action_dim: int = 7
+    use_reward_shaping: bool = False
+
+
+@dataclass
+class ReversiConfig(GameConfig):
+    """Configuration for Reversi game."""
+
+    name: str = "reversi"
+    obs_dim: int = 192
+    action_dim: int = 64
+    use_reward_shaping: bool = False
 
 
 @dataclass

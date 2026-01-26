@@ -14,40 +14,51 @@ MAX_SHIELD = 2.0
 MAX_AMMO = 6.0
 
 ACTION_NAMES = [
-    "Stay", "Up", "Down", "Left", "Right",
-    "Attack", "Shoot", "Dodge", "Shield",
-    "Dash", "AOE", "Heal", "Reload"
+    "Stay",
+    "Up",
+    "Down",
+    "Left",
+    "Right",
+    "Attack",
+    "Shoot",
+    "Dodge",
+    "Shield",
+    "Dash",
+    "AOE",
+    "Heal",
+    "Reload",
 ]
 
 # 地形字符映射
 TERRAIN_CHARS = {
-    0: '.',   # Empty
-    1: '#',   # Wall
-    2: '~',   # Water
-    3: '^',   # High Ground
+    0: ".",  # Empty
+    1: "#",  # Wall
+    2: "~",  # Water
+    3: "^",  # High Ground
 }
 
 # 道具字符映射
 ITEM_CHARS = {
-    1: 'H',   # Health
-    2: 'E',   # Energy
-    3: 'A',   # Ammo
-    4: 'S',   # Shield
+    1: "H",  # Health
+    2: "E",  # Energy
+    3: "A",  # Ammo
+    4: "S",  # Shield
 }
+
 
 # ANSI 颜色代码
 class Colors:
-    RESET = '\033[0m'
-    BOLD = '\033[1m'
-    RED = '\033[91m'
-    GREEN = '\033[92m'
-    YELLOW = '\033[93m'
-    BLUE = '\033[94m'
-    MAGENTA = '\033[95m'
-    CYAN = '\033[96m'
-    WHITE = '\033[97m'
-    BG_BLUE = '\033[44m'
-    BG_RED = '\033[41m'
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    MAGENTA = "\033[95m"
+    CYAN = "\033[96m"
+    WHITE = "\033[97m"
+    BG_BLUE = "\033[44m"
+    BG_RED = "\033[41m"
 
 
 def get_agent_info(agent) -> str:
@@ -57,8 +68,8 @@ def get_agent_info(agent) -> str:
         return "Rule-Based"
     elif class_name == "PPO":
         # 尝试获取 checkpoint 信息
-        checkpoint = getattr(agent, 'checkpoint_path', None)
-        step = getattr(agent, 'training_step', None)
+        checkpoint = getattr(agent, "checkpoint_path", None)
+        step = getattr(agent, "training_step", None)
         if checkpoint:
             return f"PPO ({checkpoint})"
         elif step:
@@ -75,23 +86,18 @@ class GameState:
     Responsible for interpreting the raw observation vector into a structured, readable format.
     Assumes P1 perspective observation structure.
     """
+
     def __init__(self, obs_vector):
         # obs_vector: np.array shape (160,)
         self.raw = obs_vector
 
         # Parse P1 (My) info - [0-7]: positions and base stats
-        self.p1_pos = (
-            self._denorm_pos(obs_vector[0]),
-            self._denorm_pos(obs_vector[1])
-        )
+        self.p1_pos = (self._denorm_pos(obs_vector[0]), self._denorm_pos(obs_vector[1]))
         self.p1_hp = self._denorm_hp(obs_vector[4])
         self.p1_eng = self._denorm_eng(obs_vector[6])
 
         # Parse P2 (Enemy) info
-        self.p2_pos = (
-            self._denorm_pos(obs_vector[2]),
-            self._denorm_pos(obs_vector[3])
-        )
+        self.p2_pos = (self._denorm_pos(obs_vector[2]), self._denorm_pos(obs_vector[3]))
         self.p2_hp = self._denorm_hp(obs_vector[5])
         self.p2_eng = self._denorm_eng(obs_vector[7])
 
@@ -152,6 +158,7 @@ class LiveReplayPlayer:
     """
     在终端实时播放游戏回放
     """
+
     def __init__(self, p1_info: str, p2_info: str, delay: float = 0.5):
         self.p1_info = p1_info
         self.p2_info = p2_info
@@ -161,21 +168,34 @@ class LiveReplayPlayer:
     def clear_screen(self):
         """清屏"""
         # 使用 ANSI 转义序列移动光标到顶部
-        sys.stdout.write('\033[H\033[J')
+        sys.stdout.write("\033[H\033[J")
         sys.stdout.flush()
 
-    def render_frame(self, step_idx: int, state: GameState, action_p1: int, action_p2: int,
-                     reward_p1: float, reward_p2: float, done: bool, info: dict = None):
+    def render_frame(
+        self,
+        step_idx: int,
+        state: GameState,
+        action_p1: int,
+        action_p2: int,
+        reward_p1: float,
+        reward_p2: float,
+        done: bool,
+        info: dict = None,
+    ):
         """渲染单帧到终端"""
         lines = []
 
         # 标题栏
-        lines.append(f"{Colors.BOLD}{'='*60}{Colors.RESET}")
-        lines.append(f"{Colors.BOLD}  LIVE BATTLE - Step {step_idx:3d}/60{Colors.RESET}")
-        lines.append(f"{Colors.BOLD}{'='*60}{Colors.RESET}")
+        lines.append(f"{Colors.BOLD}{'=' * 60}{Colors.RESET}")
+        lines.append(
+            f"{Colors.BOLD}  LIVE BATTLE - Step {step_idx:3d}/60{Colors.RESET}"
+        )
+        lines.append(f"{Colors.BOLD}{'=' * 60}{Colors.RESET}")
 
         # 对战信息
-        lines.append(f"  {Colors.CYAN}P1 [{self.p1_info}]{Colors.RESET} vs {Colors.MAGENTA}P2 [{self.p2_info}]{Colors.RESET}")
+        lines.append(
+            f"  {Colors.CYAN}P1 [{self.p1_info}]{Colors.RESET} vs {Colors.MAGENTA}P2 [{self.p2_info}]{Colors.RESET}"
+        )
         lines.append("")
 
         # 玩家状态 - P1
@@ -183,45 +203,83 @@ class LiveReplayPlayer:
         eng_bar_p1 = self._eng_bar(state.p1_eng, int(MAX_ENERGY))
         shield_str_p1 = f"🛡{state.p1_shield}" if state.p1_shield > 0 else "  "
         ammo_str_p1 = f"💎{state.p1_ammo}"
-        dodge_str_p1 = f" {Colors.YELLOW}[DODGE]{Colors.RESET}" if state.p1_dodge else ""
+        dodge_str_p1 = (
+            f" {Colors.YELLOW}[DODGE]{Colors.RESET}" if state.p1_dodge else ""
+        )
 
-        lines.append(f"  {Colors.CYAN}P1{Colors.RESET} {hp_bar_p1} {eng_bar_p1} {shield_str_p1} {ammo_str_p1}{dodge_str_p1}")
+        lines.append(
+            f"  {Colors.CYAN}P1{Colors.RESET} {hp_bar_p1} {eng_bar_p1} {shield_str_p1} {ammo_str_p1}{dodge_str_p1}"
+        )
 
         # 玩家状态 - P2
         hp_bar_p2 = self._hp_bar(state.p2_hp, int(MAX_HP))
         eng_bar_p2 = self._eng_bar(state.p2_eng, int(MAX_ENERGY))
         shield_str_p2 = f"🛡{state.p2_shield}" if state.p2_shield > 0 else "  "
         ammo_str_p2 = f"💎{state.p2_ammo}"
-        dodge_str_p2 = f" {Colors.YELLOW}[DODGE]{Colors.RESET}" if state.p2_dodge else ""
+        dodge_str_p2 = (
+            f" {Colors.YELLOW}[DODGE]{Colors.RESET}" if state.p2_dodge else ""
+        )
 
-        lines.append(f"  {Colors.MAGENTA}P2{Colors.RESET} {hp_bar_p2} {eng_bar_p2} {shield_str_p2} {ammo_str_p2}{dodge_str_p2}")
+        lines.append(
+            f"  {Colors.MAGENTA}P2{Colors.RESET} {hp_bar_p2} {eng_bar_p2} {shield_str_p2} {ammo_str_p2}{dodge_str_p2}"
+        )
         lines.append("")
 
         # 地图
         lines.append(self._render_map(state))
 
         # 动作
-        a1_str = ACTION_NAMES[action_p1] if 0 <= action_p1 < len(ACTION_NAMES) else str(action_p1)
-        a2_str = ACTION_NAMES[action_p2] if 0 <= action_p2 < len(ACTION_NAMES) else str(action_p2)
-        lines.append(f"  {Colors.CYAN}P1: {a1_str:8s}{Colors.RESET}  |  {Colors.MAGENTA}P2: {a2_str:8s}{Colors.RESET}")
+        a1_str = (
+            ACTION_NAMES[action_p1]
+            if 0 <= action_p1 < len(ACTION_NAMES)
+            else str(action_p1)
+        )
+        a2_str = (
+            ACTION_NAMES[action_p2]
+            if 0 <= action_p2 < len(ACTION_NAMES)
+            else str(action_p2)
+        )
+        lines.append(
+            f"  {Colors.CYAN}P1: {a1_str:8s}{Colors.RESET}  |  {Colors.MAGENTA}P2: {a2_str:8s}{Colors.RESET}"
+        )
 
         # 奖励变化
         if reward_p1 != 0 or reward_p2 != 0:
-            r1_color = Colors.GREEN if reward_p1 > 0 else Colors.RED if reward_p1 < 0 else Colors.WHITE
-            r2_color = Colors.GREEN if reward_p2 > 0 else Colors.RED if reward_p2 < 0 else Colors.WHITE
-            lines.append(f"  Reward: {r1_color}P1 {reward_p1:+.1f}{Colors.RESET}  |  {r2_color}P2 {reward_p2:+.1f}{Colors.RESET}")
+            r1_color = (
+                Colors.GREEN
+                if reward_p1 > 0
+                else Colors.RED
+                if reward_p1 < 0
+                else Colors.WHITE
+            )
+            r2_color = (
+                Colors.GREEN
+                if reward_p2 > 0
+                else Colors.RED
+                if reward_p2 < 0
+                else Colors.WHITE
+            )
+            lines.append(
+                f"  Reward: {r1_color}P1 {reward_p1:+.1f}{Colors.RESET}  |  {r2_color}P2 {reward_p2:+.1f}{Colors.RESET}"
+            )
 
         # 结束信息
         if done:
             lines.append("")
-            lines.append(f"{Colors.BOLD}{'='*60}{Colors.RESET}")
+            lines.append(f"{Colors.BOLD}{'=' * 60}{Colors.RESET}")
             if state.p1_hp > state.p2_hp:
-                lines.append(f"  {Colors.CYAN}{Colors.BOLD}>>> P1 WINS! <<<{Colors.RESET}")
+                lines.append(
+                    f"  {Colors.CYAN}{Colors.BOLD}>>> P1 WINS! <<<{Colors.RESET}"
+                )
             elif state.p2_hp > state.p1_hp:
-                lines.append(f"  {Colors.MAGENTA}{Colors.BOLD}>>> P2 WINS! <<<{Colors.RESET}")
+                lines.append(
+                    f"  {Colors.MAGENTA}{Colors.BOLD}>>> P2 WINS! <<<{Colors.RESET}"
+                )
             else:
-                lines.append(f"  {Colors.YELLOW}{Colors.BOLD}>>> DRAW! <<<{Colors.RESET}")
-            lines.append(f"{Colors.BOLD}{'='*60}{Colors.RESET}")
+                lines.append(
+                    f"  {Colors.YELLOW}{Colors.BOLD}>>> DRAW! <<<{Colors.RESET}"
+                )
+            lines.append(f"{Colors.BOLD}{'=' * 60}{Colors.RESET}")
 
         lines.append("")
         lines.append(f"  {Colors.WHITE}[Press Ctrl+C to stop]{Colors.RESET}")
@@ -232,7 +290,13 @@ class LiveReplayPlayer:
         """生成 HP 进度条"""
         filled = "█" * current
         empty = "░" * (max_val - current)
-        color = Colors.GREEN if current > 2 else Colors.YELLOW if current > 1 else Colors.RED
+        color = (
+            Colors.GREEN
+            if current > 2
+            else Colors.YELLOW
+            if current > 1
+            else Colors.RED
+        )
         return f"HP[{color}{filled}{empty}{Colors.RESET}]"
 
     def _eng_bar(self, current: int, max_val: int) -> str:
@@ -251,8 +315,8 @@ class LiveReplayPlayer:
         for y in range(MAP_SIZE - 1, -1, -1):
             row_str = "  |"
             for x in range(MAP_SIZE):
-                is_p1 = (x == state.p1_pos[0] and y == state.p1_pos[1])
-                is_p2 = (x == state.p2_pos[0] and y == state.p2_pos[1])
+                is_p1 = x == state.p1_pos[0] and y == state.p1_pos[1]
+                is_p2 = x == state.p2_pos[0] and y == state.p2_pos[1]
                 terrain = state.terrain[y, x]
                 item = state.items[y, x]
 
@@ -269,7 +333,7 @@ class LiveReplayPlayer:
                 elif terrain == 3:  # High Ground
                     content = f"{Colors.YELLOW}^^{Colors.RESET}"
                 elif item > 0:
-                    item_char = ITEM_CHARS.get(item, '?')
+                    item_char = ITEM_CHARS.get(item, "?")
                     content = f"{Colors.GREEN}{item_char} {Colors.RESET}"
                 else:
                     content = ". "
@@ -280,10 +344,21 @@ class LiveReplayPlayer:
 
         return "\n".join(lines)
 
-    def add_frame(self, step_idx: int, state: GameState, action_p1: int, action_p2: int,
-                  reward_p1: float, reward_p2: float, done: bool, info: dict = None):
+    def add_frame(
+        self,
+        step_idx: int,
+        state: GameState,
+        action_p1: int,
+        action_p2: int,
+        reward_p1: float,
+        reward_p2: float,
+        done: bool,
+        info: dict = None,
+    ):
         """添加一帧"""
-        frame = self.render_frame(step_idx, state, action_p1, action_p2, reward_p1, reward_p2, done, info)
+        frame = self.render_frame(
+            step_idx, state, action_p1, action_p2, reward_p1, reward_p2, done, info
+        )
         self.frames.append((frame, done))
 
     def play(self):
@@ -306,7 +381,13 @@ class AsciiReplayLogger:
     Handles the visualization and file I/O for game replays.
     Decoupled from the game loop and environment logic.
     """
-    def __init__(self, output_dir: str = "replays", p1_info: str = "Unknown", p2_info: str = "Unknown"):
+
+    def __init__(
+        self,
+        output_dir: str = "replays",
+        p1_info: str = "Unknown",
+        p2_info: str = "Unknown",
+    ):
         self.output_dir = output_dir
         self.p1_info = p1_info
         self.p2_info = p2_info
@@ -314,29 +395,40 @@ class AsciiReplayLogger:
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
-        timestamp = time.strftime('%Y%m%d_%H%M%S')
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
         self.filename = os.path.join(output_dir, f"replay_{timestamp}.txt")
         self.file = open(self.filename, "w", encoding="utf-8")
 
         self._write_header(timestamp)
 
     def _write_header(self, timestamp: str):
-        self.file.write("\n" + "="*60 + "\n")
+        self.file.write("\n" + "=" * 60 + "\n")
         self.file.write(f" >>> BATTLE REPLAY @ {timestamp} <<<\n")
-        self.file.write("="*60 + "\n\n")
+        self.file.write("=" * 60 + "\n\n")
         self.file.write(f"P1: {self.p1_info}\n")
         self.file.write(f"P2: {self.p2_info}\n")
-        self.file.write("-"*60 + "\n\n")
+        self.file.write("-" * 60 + "\n\n")
 
-    def log_step(self, step_idx: int, state: GameState, action_p1: int, action_p2: int,
-                 reward_p1: float, reward_p2: float, done: bool, info: dict = None):
+    def log_step(
+        self,
+        step_idx: int,
+        state: GameState,
+        action_p1: int,
+        action_p2: int,
+        reward_p1: float,
+        reward_p2: float,
+        done: bool,
+        info: dict = None,
+    ):
         """
         Logs a single step of the game.
         """
         # 1. State Info
-        self.file.write(f"Step {step_idx} | "
-                        f"P1: {state.p1_pos} HP={state.p1_hp} E={state.p1_eng} Sh={state.p1_shield} Am={state.p1_ammo} | "
-                        f"P2: {state.p2_pos} HP={state.p2_hp} E={state.p2_eng} Sh={state.p2_shield} Am={state.p2_ammo}\n")
+        self.file.write(
+            f"Step {step_idx} | "
+            f"P1: {state.p1_pos} HP={state.p1_hp} E={state.p1_eng} Sh={state.p1_shield} Am={state.p1_ammo} | "
+            f"P2: {state.p2_pos} HP={state.p2_hp} E={state.p2_eng} Sh={state.p2_shield} Am={state.p2_ammo}\n"
+        )
 
         if state.p1_dodge:
             self.file.write("  [P1 Dodge Active]\n")
@@ -353,8 +445,10 @@ class AsciiReplayLogger:
 
         # 4. Result if done
         if done:
-            self.file.write("-"*60 + "\n")
-            self.file.write(f"Game Over! Reward: P1={reward_p1:.1f}, P2={reward_p2:.1f}\n")
+            self.file.write("-" * 60 + "\n")
+            self.file.write(
+                f"Game Over! Reward: P1={reward_p1:.1f}, P2={reward_p2:.1f}\n"
+            )
             if state.p1_hp > state.p2_hp:
                 self.file.write(f"Winner: P1 ({self.p1_info})\n")
             elif state.p2_hp > state.p1_hp:
@@ -373,8 +467,8 @@ class AsciiReplayLogger:
             row_str = "|"
             for x in range(MAP_SIZE):
                 content = "  "
-                is_p1 = (x == state.p1_pos[0] and y == state.p1_pos[1])
-                is_p2 = (x == state.p2_pos[0] and y == state.p2_pos[1])
+                is_p1 = x == state.p1_pos[0] and y == state.p1_pos[1]
+                is_p2 = x == state.p2_pos[0] and y == state.p2_pos[1]
                 terrain = state.terrain[y, x]
                 item = state.items[y, x]
 
@@ -391,7 +485,7 @@ class AsciiReplayLogger:
                 elif terrain == 3:  # High Ground
                     content = "^^"
                 elif item > 0:
-                    content = ITEM_CHARS.get(item, '?') + " "
+                    content = ITEM_CHARS.get(item, "?") + " "
                 else:
                     content = ". "
 
@@ -400,7 +494,9 @@ class AsciiReplayLogger:
             self.file.write(top_border + "\n")
 
         # Legend
-        self.file.write("Legend: 1=P1, 2=P2, ##=Wall, ~~=Water, ^^=HighGround, H=Health, E=Energy, A=Ammo, S=Shield\n")
+        self.file.write(
+            "Legend: 1=P1, 2=P2, ##=Wall, ~~=Water, ^^=HighGround, H=Health, E=Energy, A=Ammo, S=Shield\n"
+        )
 
     def _get_action_name(self, action_idx: int) -> str:
         if 0 <= action_idx < len(ACTION_NAMES):
@@ -413,7 +509,9 @@ class AsciiReplayLogger:
             self.file = None
 
 
-def run_evaluation_episode(agent_p1, agent_p2, env, device, logger=None, live_player=None, max_steps=60):
+def run_evaluation_episode(
+    agent_p1, agent_p2, env, device, logger=None, live_player=None, max_steps=60
+):
     """
     Core Game Loop for Evaluation.
     Decoupled from rendering logic.
@@ -463,7 +561,9 @@ def run_evaluation_episode(agent_p1, agent_p2, env, device, logger=None, live_pl
 
         # Add frame for live playback
         if live_player:
-            live_player.add_frame(step, state, a1, a2, reward[0], reward[1], done[0], info)
+            live_player.add_frame(
+                step, state, a1, a2, reward[0], reward[1], done[0], info
+            )
 
         if done[0]:
             break
@@ -535,7 +635,7 @@ def watch_replay(replay_file: str, delay: float = 0.3):
         print(f"Error: Replay file not found: {replay_file}")
         return
 
-    with open(replay_file, 'r', encoding='utf-8') as f:
+    with open(replay_file, "r", encoding="utf-8") as f:
         content = f.read()
 
     # 按 Step 分割
@@ -546,7 +646,7 @@ def watch_replay(replay_file: str, delay: float = 0.3):
 
     for step_content in steps[1:]:
         # 清屏
-        sys.stdout.write('\033[H\033[J')
+        sys.stdout.write("\033[H\033[J")
         sys.stdout.flush()
 
         print(steps[0])  # 保留 header
@@ -574,10 +674,182 @@ def watch_replay(replay_file: str, delay: float = 0.3):
 
         # 检查是否结束
         if "Game Over" in step_content:
-            print("\n" + "-"*60)
+            print("\n" + "-" * 60)
             for line in lines:
                 if "Game Over" in line or "Winner" in line or "Draw" in line:
                     print(line)
             break
 
     print("\nReplay finished.")
+
+
+from typing import TypedDict
+
+
+class _BoardGameConfig(TypedDict):
+    rows: int
+    cols: int
+    obs_dim: int
+    channels: int
+    symbols: dict[str, str]
+    name: str
+
+
+BOARD_GAME_CONFIG: dict[str, _BoardGameConfig] = {
+    "connect4": {
+        "rows": 6,
+        "cols": 7,
+        "obs_dim": 126,
+        "channels": 3,
+        "symbols": {"empty": ".", "self": "X", "opponent": "O"},
+        "name": "Connect4",
+    },
+    "reversi": {
+        "rows": 8,
+        "cols": 8,
+        "obs_dim": 192,
+        "channels": 3,
+        "symbols": {"empty": ".", "self": "B", "opponent": "W"},
+        "name": "Reversi",
+    },
+}
+
+
+class BoardGameState:
+    """
+    State parser for board games (Connect4, Reversi).
+    Obs layout: obs[(row * cols + col) * 3 + channel] where channels are [empty, self, opponent].
+    """
+
+    def __init__(self, obs_vector, game_name: str):
+        if game_name not in BOARD_GAME_CONFIG:
+            raise ValueError(
+                f"Unknown game: {game_name}. Supported: {list(BOARD_GAME_CONFIG.keys())}"
+            )
+
+        config = BOARD_GAME_CONFIG[game_name]
+        self.game_name = game_name
+        self.rows = int(config["rows"])
+        self.cols = int(config["cols"])
+        self.symbols = dict(config["symbols"])
+        self.raw = obs_vector
+
+        expected_dim = int(config["obs_dim"])
+        if len(obs_vector) != expected_dim:
+            raise ValueError(
+                f"Expected obs_dim={expected_dim} for {game_name}, got {len(obs_vector)}"
+            )
+
+        self.board = np.zeros((self.rows, self.cols), dtype=int)
+
+        for row in range(self.rows):
+            for col in range(self.cols):
+                base = (row * self.cols + col) * 3
+                if obs_vector[base] > 0.5:
+                    self.board[row, col] = 0
+                elif obs_vector[base + 1] > 0.5:
+                    self.board[row, col] = 1
+                elif obs_vector[base + 2] > 0.5:
+                    self.board[row, col] = 2
+                else:
+                    self.board[row, col] = 0
+
+    def render(self) -> str:
+        lines = []
+
+        if self.game_name == "connect4":
+            header = "  " + " ".join(str(i) for i in range(self.cols))
+            lines.append(header)
+        elif self.game_name == "reversi":
+            header = "  " + " ".join("abcdefgh"[: self.cols])
+            lines.append(header)
+
+        if self.game_name == "connect4":
+            for row in range(self.rows - 1, -1, -1):
+                row_str = f"{row} "
+                for col in range(self.cols):
+                    cell = self.board[row, col]
+                    if cell == 0:
+                        row_str += self.symbols["empty"]
+                    elif cell == 1:
+                        row_str += self.symbols["self"]
+                    else:
+                        row_str += self.symbols["opponent"]
+                    row_str += " "
+                lines.append(row_str.rstrip())
+        else:
+            for row in range(self.rows):
+                row_str = f"{row + 1} "
+                for col in range(self.cols):
+                    cell = self.board[row, col]
+                    if cell == 0:
+                        row_str += self.symbols["empty"]
+                    elif cell == 1:
+                        row_str += self.symbols["self"]
+                    else:
+                        row_str += self.symbols["opponent"]
+                    row_str += " "
+                lines.append(row_str.rstrip())
+
+        return "\n".join(lines)
+
+    def render_colored(self) -> str:
+        lines = []
+
+        if self.game_name == "connect4":
+            header = "  " + " ".join(str(i) for i in range(self.cols))
+            lines.append(f"{Colors.WHITE}{header}{Colors.RESET}")
+        elif self.game_name == "reversi":
+            header = "  " + " ".join("abcdefgh"[: self.cols])
+            lines.append(f"{Colors.WHITE}{header}{Colors.RESET}")
+
+        if self.game_name == "connect4":
+            for row in range(self.rows - 1, -1, -1):
+                row_str = f"{Colors.WHITE}{row}{Colors.RESET} "
+                for col in range(self.cols):
+                    cell = self.board[row, col]
+                    if cell == 0:
+                        row_str += (
+                            f"{Colors.WHITE}{self.symbols['empty']}{Colors.RESET}"
+                        )
+                    elif cell == 1:
+                        row_str += f"{Colors.CYAN}{self.symbols['self']}{Colors.RESET}"
+                    else:
+                        row_str += (
+                            f"{Colors.MAGENTA}{self.symbols['opponent']}{Colors.RESET}"
+                        )
+                    row_str += " "
+                lines.append(row_str.rstrip())
+        else:
+            for row in range(self.rows):
+                row_str = f"{Colors.WHITE}{row + 1}{Colors.RESET} "
+                for col in range(self.cols):
+                    cell = self.board[row, col]
+                    if cell == 0:
+                        row_str += (
+                            f"{Colors.WHITE}{self.symbols['empty']}{Colors.RESET}"
+                        )
+                    elif cell == 1:
+                        row_str += f"{Colors.CYAN}{self.symbols['self']}{Colors.RESET}"
+                    else:
+                        row_str += (
+                            f"{Colors.MAGENTA}{self.symbols['opponent']}{Colors.RESET}"
+                        )
+                    row_str += " "
+                lines.append(row_str.rstrip())
+
+        return "\n".join(lines)
+
+    def count_pieces(self) -> tuple:
+        self_count = np.sum(self.board == 1)
+        opponent_count = np.sum(self.board == 2)
+        return int(self_count), int(opponent_count)
+
+
+def render_board_game(obs, game_name: str, colored: bool = False) -> str:
+    obs_array = np.array(obs) if not isinstance(obs, np.ndarray) else obs
+    state = BoardGameState(obs_array, game_name)
+
+    if colored:
+        return state.render_colored()
+    return state.render()
