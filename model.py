@@ -3,6 +3,7 @@ import torch.nn as nn
 from torch.distributions import Categorical
 import numpy as np
 from models.registry import register_model, get_model
+from games.registry import get_game
 
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
@@ -289,17 +290,18 @@ def create_model_for_game(
         game_name: Name of the game
         obs_dim: Observation dimension
         action_dim: Action dimension
-        model_name: Optional specific model name. If None, auto-selects.
+        model_name: Optional specific model name. If None, auto-selects from game config.
 
     Returns:
         Instantiated model
     """
     if model_name is None:
-        if game_name == "simple_duel":
-            model_name = "actor_critic"
-        elif game_name == "tictactoe":
-            model_name = "simple_mlp"
-        else:
+        try:
+            game = get_game(game_name)
+            # Use getattr to avoid crash if default_model_name is missing
+            model_name = getattr(game.config, "default_model_name", "simple_mlp")
+        except (ImportError, AttributeError):
             model_name = "simple_mlp"
 
+    assert model_name is not None
     return get_model(model_name, obs_dim=obs_dim, action_dim=action_dim)
