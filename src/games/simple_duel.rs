@@ -666,39 +666,36 @@ impl SimpleDuel {
         false
     }
 
-    // 应用伤害（考虑闪避和护盾）
-    fn apply_damage(&mut self, is_p2_target: bool, damage: i32, is_ranged: bool) -> bool {
-        let (dodge_active, shield, high_ground) = if is_p2_target {
-            (
-                self.p2_dodge_active,
-                self.p2_shield,
-                self.is_high_ground(self.p2_pos),
-            )
+    // 检查伤害是否会被闪避或高地减免（不修改状态）
+    fn check_damage_blocked(&mut self, is_p2_target: bool, is_ranged: bool) -> bool {
+        let (dodge_active, high_ground) = if is_p2_target {
+            (self.p2_dodge_active, self.is_high_ground(self.p2_pos))
         } else {
-            (
-                self.p1_dodge_active,
-                self.p1_shield,
-                self.is_high_ground(self.p1_pos),
-            )
+            (self.p1_dodge_active, self.is_high_ground(self.p1_pos))
         };
 
         // 闪避检查
         if dodge_active {
-            // 闪避成功，清除闪避状态
-            if is_p2_target {
-                self.p2_dodge_active = false;
-            } else {
-                self.p1_dodge_active = false;
-            }
-            return false;
+            return true;
         }
 
         // 高地远程攻击减伤（50%几率闪避）
         if is_ranged && high_ground {
             if self.rng.gen_bool(0.5) {
-                return false;
+                return true;
             }
         }
+
+        false
+    }
+
+    // 应用伤害到目标（不检查闪避，闪避已在check_damage_blocked中处理）
+    fn apply_damage_direct(&mut self, is_p2_target: bool, damage: i32) -> bool {
+        let shield = if is_p2_target {
+            self.p2_shield
+        } else {
+            self.p1_shield
+        };
 
         let mut remaining_damage = damage;
 
@@ -726,7 +723,6 @@ impl SimpleDuel {
         false
     }
 
-    // 道具拾取
     fn pickup_item(&mut self, is_p2: bool) {
         let pos = if is_p2 { self.p2_pos } else { self.p1_pos };
         let idx = Self::pos_to_idx(pos);
@@ -1142,7 +1138,7 @@ impl GameEnv for SimpleDuel {
             match phys_act_p1 {
                 ACT_UP | ACT_DOWN | ACT_LEFT | ACT_RIGHT => {
                     let extra = self.apply_move(false, phys_act_p1);
-                    self.p1_energy -= extra;
+                    self.p1_energy = (self.p1_energy - extra).max(0);
                 }
                 ACT_DODGE => self.p1_dodge_active = true,
                 ACT_SHIELD => self.p1_shield = (self.p1_shield + 1).min(MAX_SHIELD),
@@ -1163,7 +1159,7 @@ impl GameEnv for SimpleDuel {
             match phys_act_p2 {
                 ACT_UP | ACT_DOWN | ACT_LEFT | ACT_RIGHT => {
                     let extra = self.apply_move(true, phys_act_p2);
-                    self.p2_energy -= extra;
+                    self.p2_energy = (self.p2_energy - extra).max(0);
                 }
                 ACT_DODGE => self.p2_dodge_active = true,
                 ACT_SHIELD => self.p2_shield = (self.p2_shield + 1).min(MAX_SHIELD),
@@ -1183,70 +1179,90 @@ impl GameEnv for SimpleDuel {
         self.pickup_item(false);
         self.pickup_item(true);
 
-        // 4. 攻击判定
+        // 4. 攻击判定 - 同时计算，同时应用
         let mut r1 = 0.0;
         let mut r2 = 0.0;
 
-        // P1 攻击
+        // 阶段1: 计算所有攻击是否命中（不应用伤害）
+        let mut p1_attack_info: Option<(i32, bool)> = None; // (damage, is_ranged)
+        let mut p2_attack_info: Option<(i32, bool)> = None;
+
+        // P1 攻击计算
         if phys_act_p1 == ACT_ATTACK && cost_p1 == COST_ATTACK {
             if self.check_hit(self.p1_pos, self.p2_pos, ATTACK_RANGE) {
-                if self.apply_damage(true, 1, false) {
-                    r1 += 1.0;
-                    r2 -= 1.0;
-                    self.p1_damage_dealt += 1;
-                }
+                p1_attack_info = Some((1, false));
                 self.p1_attacks += 1;
             }
         } else if phys_act_p1 == ACT_SHOOT && cost_p1 == COST_SHOOT && self.p1_ammo > 0 {
             self.p1_ammo -= 1;
             if self.check_ranged_hit(self.p1_pos, self.p2_pos, SHOOT_RANGE) {
-                if self.apply_damage(true, 1, true) {
-                    r1 += 1.0;
-                    r2 -= 1.0;
-                    self.p1_damage_dealt += 1;
-                }
+                p1_attack_info = Some((1, true));
                 self.p1_attacks += 1;
             }
         } else if phys_act_p1 == ACT_AOE && cost_p1 == COST_AOE {
             if self.check_hit(self.p1_pos, self.p2_pos, AOE_RANGE) {
-                if self.apply_damage(true, 1, false) {
-                    r1 += 1.0;
-                    r2 -= 1.0;
-                    self.p1_damage_dealt += 1;
-                }
+                p1_attack_info = Some((1, false));
                 self.p1_attacks += 1;
             }
         }
 
-        // P2 攻击
+        // P2 攻击计算
         if phys_act_p2 == ACT_ATTACK && cost_p2 == COST_ATTACK {
             if self.check_hit(self.p2_pos, self.p1_pos, ATTACK_RANGE) {
-                if self.apply_damage(false, 1, false) {
-                    r2 += 1.0;
-                    r1 -= 1.0;
-                    self.p2_damage_dealt += 1;
-                }
+                p2_attack_info = Some((1, false));
                 self.p2_attacks += 1;
             }
         } else if phys_act_p2 == ACT_SHOOT && cost_p2 == COST_SHOOT && self.p2_ammo > 0 {
             self.p2_ammo -= 1;
             if self.check_ranged_hit(self.p2_pos, self.p1_pos, SHOOT_RANGE) {
-                if self.apply_damage(false, 1, true) {
-                    r2 += 1.0;
-                    r1 -= 1.0;
-                    self.p2_damage_dealt += 1;
-                }
+                p2_attack_info = Some((1, true));
                 self.p2_attacks += 1;
             }
         } else if phys_act_p2 == ACT_AOE && cost_p2 == COST_AOE {
             if self.check_hit(self.p2_pos, self.p1_pos, AOE_RANGE) {
-                if self.apply_damage(false, 1, false) {
+                p2_attack_info = Some((1, false));
+                self.p2_attacks += 1;
+            }
+        }
+
+        // 阶段2: 检查闪避（同时检查，闪避可以挡住所有攻击）
+        let p1_blocked = if let Some((_, is_ranged)) = p1_attack_info {
+            self.check_damage_blocked(true, is_ranged)
+        } else {
+            false
+        };
+        let p2_blocked = if let Some((_, is_ranged)) = p2_attack_info {
+            self.check_damage_blocked(false, is_ranged)
+        } else {
+            false
+        };
+
+        // 阶段3: 同时应用伤害
+        if let Some((damage, _)) = p1_attack_info {
+            if !p1_blocked {
+                if self.apply_damage_direct(true, damage) {
+                    r1 += 1.0;
+                    r2 -= 1.0;
+                    self.p1_damage_dealt += 1;
+                }
+            }
+        }
+        if let Some((damage, _)) = p2_attack_info {
+            if !p2_blocked {
+                if self.apply_damage_direct(false, damage) {
                     r2 += 1.0;
                     r1 -= 1.0;
                     self.p2_damage_dealt += 1;
                 }
-                self.p2_attacks += 1;
             }
+        }
+
+        // 阶段4: 清除闪避状态（在所有攻击处理完后）
+        if p1_blocked {
+            self.p2_dodge_active = false;
+        }
+        if p2_blocked {
+            self.p1_dodge_active = false;
         }
 
         // 5. 更新冷却
@@ -1436,7 +1452,7 @@ impl GameEnvZeroCopy for SimpleDuel {
             match phys_act_p1 {
                 ACT_UP | ACT_DOWN | ACT_LEFT | ACT_RIGHT => {
                     let extra = self.apply_move(false, phys_act_p1);
-                    self.p1_energy -= extra;
+                    self.p1_energy = (self.p1_energy - extra).max(0);
                 }
                 ACT_DODGE => self.p1_dodge_active = true,
                 ACT_SHIELD => self.p1_shield = (self.p1_shield + 1).min(MAX_SHIELD),
@@ -1457,7 +1473,7 @@ impl GameEnvZeroCopy for SimpleDuel {
             match phys_act_p2 {
                 ACT_UP | ACT_DOWN | ACT_LEFT | ACT_RIGHT => {
                     let extra = self.apply_move(true, phys_act_p2);
-                    self.p2_energy -= extra;
+                    self.p2_energy = (self.p2_energy - extra).max(0);
                 }
                 ACT_DODGE => self.p2_dodge_active = true,
                 ACT_SHIELD => self.p2_shield = (self.p2_shield + 1).min(MAX_SHIELD),
@@ -1477,70 +1493,90 @@ impl GameEnvZeroCopy for SimpleDuel {
         self.pickup_item(false);
         self.pickup_item(true);
 
-        // 4. 攻击判定
+        // 4. 攻击判定 - 同时计算，同时应用
         let mut r1 = 0.0;
         let mut r2 = 0.0;
 
-        // P1 攻击
+        // 阶段1: 计算所有攻击是否命中（不应用伤害）
+        let mut p1_attack_info: Option<(i32, bool)> = None; // (damage, is_ranged)
+        let mut p2_attack_info: Option<(i32, bool)> = None;
+
+        // P1 攻击计算
         if phys_act_p1 == ACT_ATTACK && cost_p1 == COST_ATTACK {
             if self.check_hit(self.p1_pos, self.p2_pos, ATTACK_RANGE) {
-                if self.apply_damage(true, 1, false) {
-                    r1 += 1.0;
-                    r2 -= 1.0;
-                    self.p1_damage_dealt += 1;
-                }
+                p1_attack_info = Some((1, false));
                 self.p1_attacks += 1;
             }
         } else if phys_act_p1 == ACT_SHOOT && cost_p1 == COST_SHOOT && self.p1_ammo > 0 {
             self.p1_ammo -= 1;
             if self.check_ranged_hit(self.p1_pos, self.p2_pos, SHOOT_RANGE) {
-                if self.apply_damage(true, 1, true) {
-                    r1 += 1.0;
-                    r2 -= 1.0;
-                    self.p1_damage_dealt += 1;
-                }
+                p1_attack_info = Some((1, true));
                 self.p1_attacks += 1;
             }
         } else if phys_act_p1 == ACT_AOE && cost_p1 == COST_AOE {
             if self.check_hit(self.p1_pos, self.p2_pos, AOE_RANGE) {
-                if self.apply_damage(true, 1, false) {
-                    r1 += 1.0;
-                    r2 -= 1.0;
-                    self.p1_damage_dealt += 1;
-                }
+                p1_attack_info = Some((1, false));
                 self.p1_attacks += 1;
             }
         }
 
-        // P2 攻击
+        // P2 攻击计算
         if phys_act_p2 == ACT_ATTACK && cost_p2 == COST_ATTACK {
             if self.check_hit(self.p2_pos, self.p1_pos, ATTACK_RANGE) {
-                if self.apply_damage(false, 1, false) {
-                    r2 += 1.0;
-                    r1 -= 1.0;
-                    self.p2_damage_dealt += 1;
-                }
+                p2_attack_info = Some((1, false));
                 self.p2_attacks += 1;
             }
         } else if phys_act_p2 == ACT_SHOOT && cost_p2 == COST_SHOOT && self.p2_ammo > 0 {
             self.p2_ammo -= 1;
             if self.check_ranged_hit(self.p2_pos, self.p1_pos, SHOOT_RANGE) {
-                if self.apply_damage(false, 1, true) {
-                    r2 += 1.0;
-                    r1 -= 1.0;
-                    self.p2_damage_dealt += 1;
-                }
+                p2_attack_info = Some((1, true));
                 self.p2_attacks += 1;
             }
         } else if phys_act_p2 == ACT_AOE && cost_p2 == COST_AOE {
             if self.check_hit(self.p2_pos, self.p1_pos, AOE_RANGE) {
-                if self.apply_damage(false, 1, false) {
+                p2_attack_info = Some((1, false));
+                self.p2_attacks += 1;
+            }
+        }
+
+        // 阶段2: 检查闪避（同时检查，闪避可以挡住所有攻击）
+        let p1_blocked = if let Some((_, is_ranged)) = p1_attack_info {
+            self.check_damage_blocked(true, is_ranged)
+        } else {
+            false
+        };
+        let p2_blocked = if let Some((_, is_ranged)) = p2_attack_info {
+            self.check_damage_blocked(false, is_ranged)
+        } else {
+            false
+        };
+
+        // 阶段3: 同时应用伤害
+        if let Some((damage, _)) = p1_attack_info {
+            if !p1_blocked {
+                if self.apply_damage_direct(true, damage) {
+                    r1 += 1.0;
+                    r2 -= 1.0;
+                    self.p1_damage_dealt += 1;
+                }
+            }
+        }
+        if let Some((damage, _)) = p2_attack_info {
+            if !p2_blocked {
+                if self.apply_damage_direct(false, damage) {
                     r2 += 1.0;
                     r1 -= 1.0;
                     self.p2_damage_dealt += 1;
                 }
-                self.p2_attacks += 1;
             }
+        }
+
+        // 阶段4: 清除闪避状态（在所有攻击处理完后）
+        if p1_blocked {
+            self.p2_dodge_active = false;
+        }
+        if p2_blocked {
+            self.p1_dodge_active = false;
         }
 
         // 5. 更新冷却
