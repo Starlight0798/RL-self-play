@@ -27,6 +27,8 @@ class RewardShaper:
         self.resource_control_coef = 0.05  # 资源控制奖励
         self.positioning_coef = 0.02  # 位置优势奖励
         self.action_diversity_coef = 0.01  # 动作多样性奖励
+        self.tactical_timing_coef = 0.03  # 战术时机奖励
+        self.engagement_coef = 0.02  # 交战距离奖励
 
         # 常量
         self.map_size = 12
@@ -113,16 +115,25 @@ class RewardShaper:
         shaped_rewards = base_rewards.clone()
 
         # Parse observations (vectorized across T and B)
+        my_x = obs[..., 0] * (self.map_size - 1)
+        my_y = obs[..., 1] * (self.map_size - 1)
+        enemy_x = obs[..., 2] * (self.map_size - 1)
+        enemy_y = obs[..., 3] * (self.map_size - 1)
         my_hp = obs[..., 4] * self.max_hp
         enemy_hp = obs[..., 5] * self.max_hp
         my_energy = obs[..., 6] * self.max_energy
+        enemy_energy = obs[..., 7] * self.max_energy
         my_shield = obs[..., 8] * self.max_shield
 
+        next_my_x = next_obs[..., 0] * (self.map_size - 1)
+        next_my_y = next_obs[..., 1] * (self.map_size - 1)
+        next_enemy_x = next_obs[..., 2] * (self.map_size - 1)
+        next_enemy_y = next_obs[..., 3] * (self.map_size - 1)
         next_my_hp = next_obs[..., 4] * self.max_hp
         next_enemy_hp = next_obs[..., 5] * self.max_hp
         next_my_shield = next_obs[..., 8] * self.max_shield
 
-        # HP advantage shaping (vectorized)
+        # HP advantage shaping (potential-based, vectorized)
         hp_diff_current = (my_hp - enemy_hp) / self.max_hp
         hp_diff_next = (next_my_hp - next_enemy_hp) / self.max_hp
         hp_shaping = self.hp_advantage_coef * (hp_diff_next - hp_diff_current)
@@ -142,6 +153,25 @@ class RewardShaper:
         # Survival bonus (vectorized)
         survival_bonus = 0.001 * torch.ones_like(base_rewards)
         shaped_rewards += survival_bonus
+
+        # ============ NEW: Tactical Timing Reward ============
+        # Reward attacking when enemy has low energy (tactical advantage)
+        attack_actions = (actions >= 5) & (actions <= 6)  # Attack or Shoot
+        enemy_low_energy = (enemy_energy <= 2.0).float()
+        tactical_timing_bonus = (
+            self.tactical_timing_coef * attack_actions.float() * enemy_low_energy
+        )
+        shaped_rewards += tactical_timing_bonus
+
+        # ============ NEW: Engagement Distance Shaping (Potential-based) ============
+        # Encourage closing distance to enemy (promotes fighting over running)
+        dist_current = torch.abs(my_x - enemy_x) + torch.abs(my_y - enemy_y)
+        dist_next = torch.abs(next_my_x - next_enemy_x) + torch.abs(
+            next_my_y - next_enemy_y
+        )
+        # Negative distance as potential (closer = higher potential)
+        engagement_shaping = self.engagement_coef * (dist_current - dist_next)
+        shaped_rewards += engagement_shaping
 
         return shaped_rewards
 
