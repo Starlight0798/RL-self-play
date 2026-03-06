@@ -27,3 +27,5 @@ sb3_repo/
 .DS_Store
 Thumbs.db
 .sisyphus
+
+.omx/
