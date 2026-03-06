@@ -414,40 +414,31 @@ impl GameEnvZeroCopy for Reversi {
             if p1_count > p2_count {
                 r1 = 1.0;
                 r2 = -1.0;
-                info = GameInfo::terminal(
-                    true,
-                    false,
-                    false,
-                    0,
-                    0,
-                    p1_count,
-                    p2_count,
-                    self.step_count,
-                );
+                info = GameInfo::terminal(TerminalStats {
+                    p1_win: true,
+                    p1_damage: p1_count,
+                    p2_damage: p2_count,
+                    steps: self.step_count,
+                    ..Default::default()
+                });
             } else if p2_count > p1_count {
                 r1 = -1.0;
                 r2 = 1.0;
-                info = GameInfo::terminal(
-                    false,
-                    true,
-                    false,
-                    0,
-                    0,
-                    p1_count,
-                    p2_count,
-                    self.step_count,
-                );
+                info = GameInfo::terminal(TerminalStats {
+                    p2_win: true,
+                    p1_damage: p1_count,
+                    p2_damage: p2_count,
+                    steps: self.step_count,
+                    ..Default::default()
+                });
             } else {
-                info = GameInfo::terminal(
-                    false,
-                    false,
-                    true,
-                    0,
-                    0,
-                    p1_count,
-                    p2_count,
-                    self.step_count,
-                );
+                info = GameInfo::terminal(TerminalStats {
+                    draw: true,
+                    p1_damage: p1_count,
+                    p2_damage: p2_count,
+                    steps: self.step_count,
+                    ..Default::default()
+                });
             }
         }
 

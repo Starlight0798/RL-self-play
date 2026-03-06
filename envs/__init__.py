@@ -1,10 +1,12 @@
 """Environment registry and factory for RL self-play games."""
 
 from dataclasses import dataclass
-from typing import Dict, Tuple, Optional, Any
+from typing import Dict
 
-# Import Rust bindings
-import high_perf_env
+try:
+    import high_perf_env
+except ModuleNotFoundError:
+    high_perf_env = None
 
 
 @dataclass
@@ -21,6 +23,20 @@ class GameInfo:
 _GAME_REGISTRY: Dict[str, GameInfo] = {}
 
 
+def has_native_backend() -> bool:
+    """Whether the Rust extension module is available."""
+    return high_perf_env is not None
+
+
+def _require_backend():
+    if high_perf_env is None:
+        raise RuntimeError(
+            "Rust extension `high_perf_env` is not built. "
+            "Run `maturin develop --release` first."
+        )
+    return high_perf_env
+
+
 def register_game(
     name: str, obs_dim: int, action_dim: int, description: str = ""
 ) -> None:
@@ -33,18 +49,20 @@ def get_game_info(name: str) -> GameInfo:
     if name not in _GAME_REGISTRY:
         # Try to get from Rust side
         try:
-            obs_dim, action_dim = high_perf_env.get_game_info(name)
+            backend = _require_backend()
+            obs_dim, action_dim = backend.get_game_info(name)
             register_game(name, obs_dim, action_dim)
         except Exception as e:
             raise ValueError(f"Unknown game: {name}. Available: {list_games()}") from e
     return _GAME_REGISTRY[name]
 
 
-def list_games() -> list:
+def list_games() -> list[str]:
     """List all available games."""
-    # Combine Python and Rust registries
-    rust_games = high_perf_env.list_games()
-    return list(set(list(_GAME_REGISTRY.keys()) + rust_games))
+    rust_games: list[str] = []
+    if has_native_backend():
+        rust_games = _require_backend().list_games()
+    return sorted(set(_GAME_REGISTRY.keys()) | set(rust_games))
 
 
 def create_env(game_name: str, num_envs: int, zero_copy: bool = True):
@@ -56,17 +74,28 @@ def create_env(game_name: str, num_envs: int, zero_copy: bool = True):
         zero_copy: If True, use zero-copy environment (faster)
 
     Returns:
-        VectorizedEnvGeneric instance
+        Native vectorized environment instance
     """
-    return high_perf_env.create_env(game_name, num_envs)
+    backend = _require_backend()
+
+    if game_name == "simple_duel":
+        if zero_copy:
+            return backend.VectorizedEnvZeroCopy(num_envs)
+        return backend.VectorizedEnv(num_envs)
+
+    return backend.create_env(game_name, num_envs)
 
 
 # Auto-register known games with descriptions
 def _init_registry():
     """Initialize registry with known games."""
+    if not has_native_backend():
+        return
+
     try:
-        for game_name in high_perf_env.list_games():
-            obs_dim, action_dim = high_perf_env.get_game_info(game_name)
+        backend = _require_backend()
+        for game_name in backend.list_games():
+            obs_dim, action_dim = backend.get_game_info(game_name)
             descriptions = {
                 "simple_duel": "12x12 tactical combat with 13 actions",
                 "tictactoe": "3x3 board game with 9 actions",
@@ -75,7 +104,7 @@ def _init_registry():
                 game_name, obs_dim, action_dim, descriptions.get(game_name, "")
             )
     except Exception:
-        pass  # Rust module not built yet
+        return
 
 
 _init_registry()

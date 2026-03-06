@@ -171,8 +171,25 @@ class Config:
         if self.game != self.game_config.name:
             self.game_config = GameConfig.from_name(self.game)
 
+        if self.num_envs <= 0:
+            raise ValueError("num_envs must be greater than 0")
+        if self.num_steps <= 0:
+            raise ValueError("num_steps must be greater than 0")
+        if self.minibatch_size <= 0:
+            raise ValueError("minibatch_size must be greater than 0")
+
         # Calculate derived values
         self.batch_size = 2 * self.num_envs * self.num_steps
+        if self.batch_size < self.minibatch_size:
+            raise ValueError(
+                "minibatch_size must not exceed batch_size "
+                f"({self.minibatch_size} > {self.batch_size})"
+            )
+        if self.batch_size % self.minibatch_size != 0:
+            raise ValueError(
+                "batch_size must be divisible by minibatch_size "
+                f"({self.batch_size} % {self.minibatch_size} != 0)"
+            )
         self.num_minibatches = self.batch_size // self.minibatch_size
         self.train_steps = self.total_timesteps // self.batch_size
 

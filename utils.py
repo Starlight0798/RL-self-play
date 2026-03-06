@@ -1,10 +1,12 @@
-import torch
-import numpy as np
-import high_perf_env
-import time
 import os
 import sys
+import time
 from typing import Any, TypedDict
+
+import numpy as np
+import torch
+
+from envs import create_env
 
 # 地形字符映射
 TERRAIN_CHARS = {
@@ -614,7 +616,7 @@ def render_ascii_game_to_file(agent_p1, agent_p2, config, replay_dir="replays"):
         else GameConfig.from_name(game_name)
     )
 
-    env = high_perf_env.create_env(game_name, 1)
+    env = create_env(game_name, 1)
 
     p1_info = get_agent_info(agent_p1)
     p2_info = get_agent_info(agent_p2)
@@ -644,7 +646,7 @@ def play_live_game(agent_p1, agent_p2, config, delay: float = 0.3):
         else GameConfig.from_name(game_name)
     )
 
-    env = high_perf_env.create_env(game_name, 1)
+    env = create_env(game_name, 1)
 
     p1_info = get_agent_info(agent_p1)
     p2_info = get_agent_info(agent_p2)

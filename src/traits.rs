@@ -1,5 +1,18 @@
 use std::collections::HashMap;
 
+pub type GameStepInfo = HashMap<String, f32>;
+pub type GameReset = (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>);
+pub type GameStep = (
+    Vec<f32>,
+    Vec<f32>,
+    f32,
+    f32,
+    bool,
+    Vec<f32>,
+    Vec<f32>,
+    GameStepInfo,
+);
+
 // ============================================================================
 // 1. 核心 Trait 定义
 // ============================================================================
@@ -16,26 +29,13 @@ pub trait GameEnv: Send + Sync + Clone {
     // 重置游戏
     // 返回 (Obs_P1, Obs_P2, Mask_P1, Mask_P2)
     // Mask: 1.0 表示合法，0.0 表示非法
-    fn reset(&mut self) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>);
+    fn reset(&mut self) -> GameReset;
 
     // 执行一步
     // 输入: P1 和 P2 的动作
     // 返回: (Obs_P1, Obs_P2, Reward_P1, Reward_P2, Done, Mask_P1, Mask_P2, Info)
     // Info: 统计信息，仅在 Done=true 时有内容，否则为空
-    fn step(
-        &mut self,
-        action_p1: usize,
-        action_p2: usize,
-    ) -> (
-        Vec<f32>,
-        Vec<f32>,
-        f32,
-        f32,
-        bool,
-        Vec<f32>,
-        Vec<f32>,
-        HashMap<String, f32>,
-    );
+    fn step(&mut self, action_p1: usize, action_p2: usize) -> GameStep;
 
     fn obs_dim() -> usize;
     fn action_dim() -> usize;
@@ -85,30 +85,33 @@ pub struct GameInfo {
     pub is_terminal: bool,
 }
 
+#[derive(Clone, Copy, Default)]
+pub struct TerminalStats {
+    pub p1_win: bool,
+    pub p2_win: bool,
+    pub draw: bool,
+    pub p1_attacks: i32,
+    pub p2_attacks: i32,
+    pub p1_damage: i32,
+    pub p2_damage: i32,
+    pub steps: i32,
+}
+
 impl GameInfo {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn terminal(
-        p1_win: bool,
-        p2_win: bool,
-        draw: bool,
-        p1_attacks: i32,
-        p2_attacks: i32,
-        p1_damage: i32,
-        p2_damage: i32,
-        steps: i32,
-    ) -> Self {
+    pub fn terminal(stats: TerminalStats) -> Self {
         Self {
-            p1_win: if p1_win { 1.0 } else { 0.0 },
-            p2_win: if p2_win { 1.0 } else { 0.0 },
-            draw: if draw { 1.0 } else { 0.0 },
-            p1_attacks: p1_attacks as f32,
-            p2_attacks: p2_attacks as f32,
-            p1_damage: p1_damage as f32,
-            p2_damage: p2_damage as f32,
-            steps: steps as f32,
+            p1_win: if stats.p1_win { 1.0 } else { 0.0 },
+            p2_win: if stats.p2_win { 1.0 } else { 0.0 },
+            draw: if stats.draw { 1.0 } else { 0.0 },
+            p1_attacks: stats.p1_attacks as f32,
+            p2_attacks: stats.p2_attacks as f32,
+            p1_damage: stats.p1_damage as f32,
+            p2_damage: stats.p2_damage as f32,
+            steps: stats.steps as f32,
             is_terminal: true,
         }
     }

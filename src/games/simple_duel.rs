@@ -405,16 +405,10 @@ impl SimpleDuel {
             };
 
         // 计算移动到水域的额外消耗
-        let water_cost = |target: (i32, i32)| -> i32 {
-            if self.is_water(target) {
-                1
-            } else {
-                0
-            }
-        };
+        let water_cost = |target: (i32, i32)| -> i32 { if self.is_water(target) { 1 } else { 0 } };
 
         // 遍历所有逻辑动作
-        for act in 0..ACTION_DIM {
+        for (act, slot) in mask.iter_mut().enumerate().take(ACTION_DIM) {
             let phys_act = Self::transform_action(act, is_p2_perspective);
             let is_legal = match phys_act {
                 ACT_STAY => true,
@@ -462,9 +456,7 @@ impl SimpleDuel {
                 _ => false,
             };
 
-            if is_legal {
-                mask[act] = 1.0;
-            }
+            *slot = if is_legal { 1.0 } else { 0.0 };
         }
         mask
     }
@@ -580,10 +572,9 @@ impl SimpleDuel {
             }
 
             // Diagonal check
-            if next_x != x && next_y != y {
-                if self.is_wall((next_x, y)) && self.is_wall((x, next_y)) {
-                    return false;
-                }
+            if next_x != x && next_y != y && self.is_wall((next_x, y)) && self.is_wall((x, next_y))
+            {
+                return false;
             }
 
             x = next_x;
@@ -680,10 +671,8 @@ impl SimpleDuel {
         }
 
         // 高地远程攻击减伤（50%几率闪避）
-        if is_ranged && high_ground {
-            if self.rng.gen_bool(0.5) {
-                return true;
-            }
+        if is_ranged && high_ground && self.rng.gen_bool(0.5) {
+            return true;
         }
 
         false
@@ -931,15 +920,9 @@ impl SimpleDuel {
                 )
             };
 
-        let water_cost = |target: (i32, i32)| -> i32 {
-            if self.is_water(target) {
-                1
-            } else {
-                0
-            }
-        };
+        let water_cost = |target: (i32, i32)| -> i32 { if self.is_water(target) { 1 } else { 0 } };
 
-        for act in 0..ACTION_DIM {
+        for (act, slot) in mask.iter_mut().enumerate().take(ACTION_DIM) {
             let phys_act = Self::transform_action(act, is_p2_perspective);
             let is_legal = match phys_act {
                 ACT_STAY => true,
@@ -983,7 +966,7 @@ impl SimpleDuel {
                 _ => false,
             };
 
-            mask[act] = if is_legal { 1.0 } else { 0.0 };
+            *slot = if is_legal { 1.0 } else { 0.0 };
         }
     }
 }
@@ -1199,11 +1182,12 @@ impl GameEnv for SimpleDuel {
                 p1_attack_info = Some((1, true));
                 self.p1_attacks += 1;
             }
-        } else if phys_act_p1 == ACT_AOE && cost_p1 == COST_AOE {
-            if self.check_hit(self.p1_pos, self.p2_pos, AOE_RANGE) {
-                p1_attack_info = Some((1, false));
-                self.p1_attacks += 1;
-            }
+        } else if phys_act_p1 == ACT_AOE
+            && cost_p1 == COST_AOE
+            && self.check_hit(self.p1_pos, self.p2_pos, AOE_RANGE)
+        {
+            p1_attack_info = Some((1, false));
+            self.p1_attacks += 1;
         }
 
         // P2 攻击计算
@@ -1218,11 +1202,12 @@ impl GameEnv for SimpleDuel {
                 p2_attack_info = Some((1, true));
                 self.p2_attacks += 1;
             }
-        } else if phys_act_p2 == ACT_AOE && cost_p2 == COST_AOE {
-            if self.check_hit(self.p2_pos, self.p1_pos, AOE_RANGE) {
-                p2_attack_info = Some((1, false));
-                self.p2_attacks += 1;
-            }
+        } else if phys_act_p2 == ACT_AOE
+            && cost_p2 == COST_AOE
+            && self.check_hit(self.p2_pos, self.p1_pos, AOE_RANGE)
+        {
+            p2_attack_info = Some((1, false));
+            self.p2_attacks += 1;
         }
 
         // 阶段2: 检查闪避（同时检查，闪避可以挡住所有攻击）
@@ -1238,23 +1223,21 @@ impl GameEnv for SimpleDuel {
         };
 
         // 阶段3: 同时应用伤害
-        if let Some((damage, _)) = p1_attack_info {
-            if !p1_blocked {
-                if self.apply_damage_direct(true, damage) {
-                    r1 += 1.0;
-                    r2 -= 1.0;
-                    self.p1_damage_dealt += 1;
-                }
-            }
+        if let Some((damage, _)) = p1_attack_info
+            && !p1_blocked
+            && self.apply_damage_direct(true, damage)
+        {
+            r1 += 1.0;
+            r2 -= 1.0;
+            self.p1_damage_dealt += 1;
         }
-        if let Some((damage, _)) = p2_attack_info {
-            if !p2_blocked {
-                if self.apply_damage_direct(false, damage) {
-                    r2 += 1.0;
-                    r1 -= 1.0;
-                    self.p2_damage_dealt += 1;
-                }
-            }
+        if let Some((damage, _)) = p2_attack_info
+            && !p2_blocked
+            && self.apply_damage_direct(false, damage)
+        {
+            r2 += 1.0;
+            r1 -= 1.0;
+            self.p2_damage_dealt += 1;
         }
 
         // ============ 奖励塑形 (零和设计) ============
@@ -1551,11 +1534,12 @@ impl GameEnvZeroCopy for SimpleDuel {
                 p1_attack_info = Some((1, true));
                 self.p1_attacks += 1;
             }
-        } else if phys_act_p1 == ACT_AOE && cost_p1 == COST_AOE {
-            if self.check_hit(self.p1_pos, self.p2_pos, AOE_RANGE) {
-                p1_attack_info = Some((1, false));
-                self.p1_attacks += 1;
-            }
+        } else if phys_act_p1 == ACT_AOE
+            && cost_p1 == COST_AOE
+            && self.check_hit(self.p1_pos, self.p2_pos, AOE_RANGE)
+        {
+            p1_attack_info = Some((1, false));
+            self.p1_attacks += 1;
         }
 
         // P2 攻击计算
@@ -1570,11 +1554,12 @@ impl GameEnvZeroCopy for SimpleDuel {
                 p2_attack_info = Some((1, true));
                 self.p2_attacks += 1;
             }
-        } else if phys_act_p2 == ACT_AOE && cost_p2 == COST_AOE {
-            if self.check_hit(self.p2_pos, self.p1_pos, AOE_RANGE) {
-                p2_attack_info = Some((1, false));
-                self.p2_attacks += 1;
-            }
+        } else if phys_act_p2 == ACT_AOE
+            && cost_p2 == COST_AOE
+            && self.check_hit(self.p2_pos, self.p1_pos, AOE_RANGE)
+        {
+            p2_attack_info = Some((1, false));
+            self.p2_attacks += 1;
         }
 
         // 阶段2: 检查闪避（同时检查，闪避可以挡住所有攻击）
@@ -1590,23 +1575,21 @@ impl GameEnvZeroCopy for SimpleDuel {
         };
 
         // 阶段3: 同时应用伤害
-        if let Some((damage, _)) = p1_attack_info {
-            if !p1_blocked {
-                if self.apply_damage_direct(true, damage) {
-                    r1 += 1.0;
-                    r2 -= 1.0;
-                    self.p1_damage_dealt += 1;
-                }
-            }
+        if let Some((damage, _)) = p1_attack_info
+            && !p1_blocked
+            && self.apply_damage_direct(true, damage)
+        {
+            r1 += 1.0;
+            r2 -= 1.0;
+            self.p1_damage_dealt += 1;
         }
-        if let Some((damage, _)) = p2_attack_info {
-            if !p2_blocked {
-                if self.apply_damage_direct(false, damage) {
-                    r2 += 1.0;
-                    r1 -= 1.0;
-                    self.p2_damage_dealt += 1;
-                }
-            }
+        if let Some((damage, _)) = p2_attack_info
+            && !p2_blocked
+            && self.apply_damage_direct(false, damage)
+        {
+            r2 += 1.0;
+            r1 -= 1.0;
+            self.p2_damage_dealt += 1;
         }
 
         // ============ 奖励塑形 (零和设计) ============
@@ -1699,16 +1682,16 @@ impl GameEnvZeroCopy for SimpleDuel {
                 r1 -= 5.0;
             }
 
-            GameInfo::terminal(
-                self.p1_hp > self.p2_hp,
-                self.p2_hp > self.p1_hp,
-                self.p1_hp == self.p2_hp,
-                self.p1_attacks,
-                self.p2_attacks,
-                self.p1_damage_dealt,
-                self.p2_damage_dealt,
-                self.step_count,
-            )
+            GameInfo::terminal(TerminalStats {
+                p1_win: self.p1_hp > self.p2_hp,
+                p2_win: self.p2_hp > self.p1_hp,
+                draw: self.p1_hp == self.p2_hp,
+                p1_attacks: self.p1_attacks,
+                p2_attacks: self.p2_attacks,
+                p1_damage: self.p1_damage_dealt,
+                p2_damage: self.p2_damage_dealt,
+                steps: self.step_count,
+            })
         } else {
             GameInfo::new()
         };

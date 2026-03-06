@@ -2,11 +2,44 @@ use numpy::{PyArray1, PyArray2, PyArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rayon::prelude::*;
-use std::collections::HashMap;
 
+use crate::SimpleDuel;
 use crate::registry::*;
 use crate::traits::*;
-use crate::SimpleDuel;
+
+type ResetBatch = Vec<GameReset>;
+type StepBatch = Vec<GameStep>;
+type PyStepResult<'py> = PyResult<(
+    Bound<'py, PyArray2<f32>>,
+    Bound<'py, PyArray1<f32>>,
+    Bound<'py, PyArray1<bool>>,
+    Bound<'py, PyArray2<f32>>,
+    Bound<'py, PyList>,
+)>;
+
+fn validate_action_batch_lengths(
+    actions_p1: &[usize],
+    actions_p2: &[usize],
+    n: usize,
+) -> PyResult<()> {
+    if actions_p1.len() != n {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "actions_p1 length mismatch: expected {}, got {}",
+            n,
+            actions_p1.len()
+        )));
+    }
+
+    if actions_p2.len() != n {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "actions_p2 length mismatch: expected {}, got {}",
+            n,
+            actions_p2.len()
+        )));
+    }
+
+    Ok(())
+}
 
 #[pyclass]
 pub struct VectorizedEnv {
@@ -32,8 +65,7 @@ impl VectorizedEnv {
         let obs_dim = <SimpleDuel as GameEnv>::obs_dim();
         let act_dim = <SimpleDuel as GameEnv>::action_dim();
 
-        let results: Vec<(Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>)> =
-            self.envs.par_iter_mut().map(|env| env.reset()).collect();
+        let results: ResetBatch = self.envs.par_iter_mut().map(|env| env.reset()).collect();
 
         let mut obs_batch = vec![0.0; 2 * n * obs_dim];
         let mut mask_batch = vec![0.0; 2 * n * act_dim];
@@ -65,30 +97,14 @@ impl VectorizedEnv {
         py: Python<'py>,
         actions_p1: Vec<usize>,
         actions_p2: Vec<usize>,
-    ) -> (
-        Bound<'py, PyArray2<f32>>,
-        Bound<'py, PyArray1<f32>>,
-        Bound<'py, PyArray1<bool>>,
-        Bound<'py, PyArray2<f32>>,
-        Bound<'py, PyList>,
-    ) {
+    ) -> PyStepResult<'py> {
         let n = self.envs.len();
         let obs_dim = <SimpleDuel as GameEnv>::obs_dim();
         let act_dim = <SimpleDuel as GameEnv>::action_dim();
 
-        assert_eq!(actions_p1.len(), n);
-        assert_eq!(actions_p2.len(), n);
+        validate_action_batch_lengths(&actions_p1, &actions_p2, n)?;
 
-        let results: Vec<(
-            Vec<f32>,
-            Vec<f32>,
-            f32,
-            f32,
-            bool,
-            Vec<f32>,
-            Vec<f32>,
-            HashMap<String, f32>,
-        )> = self
+        let results: StepBatch = self
             .envs
             .par_iter_mut()
             .zip(actions_p1.par_iter().zip(actions_p2.par_iter()))
@@ -142,7 +158,7 @@ impl VectorizedEnv {
             .reshape((2 * n, act_dim))
             .unwrap();
 
-        (py_obs, py_reward, py_done, py_mask, py_info_list)
+        Ok((py_obs, py_reward, py_done, py_mask, py_info_list))
     }
 
     fn obs_dim(&self) -> usize {
@@ -163,7 +179,7 @@ impl<T> SendPtr<T> {
     fn new(ptr: *mut T) -> Self {
         SendPtr(ptr)
     }
-    fn as_ptr(self) -> *mut T {
+    fn ptr(self) -> *mut T {
         self.0
     }
 }
@@ -220,13 +236,13 @@ impl VectorizedEnvZeroCopy {
 
             unsafe {
                 let obs_p1 =
-                    std::slice::from_raw_parts_mut(obs_ptr.as_ptr().add(p1_obs_start), obs_dim);
+                    std::slice::from_raw_parts_mut(obs_ptr.ptr().add(p1_obs_start), obs_dim);
                 let obs_p2 =
-                    std::slice::from_raw_parts_mut(obs_ptr.as_ptr().add(p2_obs_start), obs_dim);
+                    std::slice::from_raw_parts_mut(obs_ptr.ptr().add(p2_obs_start), obs_dim);
                 let mask_p1 =
-                    std::slice::from_raw_parts_mut(mask_ptr.as_ptr().add(p1_mask_start), act_dim);
+                    std::slice::from_raw_parts_mut(mask_ptr.ptr().add(p1_mask_start), act_dim);
                 let mask_p2 =
-                    std::slice::from_raw_parts_mut(mask_ptr.as_ptr().add(p2_mask_start), act_dim);
+                    std::slice::from_raw_parts_mut(mask_ptr.ptr().add(p2_mask_start), act_dim);
 
                 env.reset_into(obs_p1, obs_p2, mask_p1, mask_p2);
             }
@@ -247,19 +263,12 @@ impl VectorizedEnvZeroCopy {
         py: Python<'py>,
         actions_p1: Vec<usize>,
         actions_p2: Vec<usize>,
-    ) -> (
-        Bound<'py, PyArray2<f32>>,
-        Bound<'py, PyArray1<f32>>,
-        Bound<'py, PyArray1<bool>>,
-        Bound<'py, PyArray2<f32>>,
-        Bound<'py, PyList>,
-    ) {
+    ) -> PyStepResult<'py> {
         let n = self.envs.len();
         let obs_dim = <SimpleDuel as GameEnvZeroCopy>::obs_dim();
         let act_dim = <SimpleDuel as GameEnvZeroCopy>::action_dim();
 
-        assert_eq!(actions_p1.len(), n);
-        assert_eq!(actions_p2.len(), n);
+        validate_action_batch_lengths(&actions_p1, &actions_p2, n)?;
 
         let obs_ptr = SendPtr::new(self.obs_buffer.as_mut_ptr());
         let mask_ptr = SendPtr::new(self.mask_buffer.as_mut_ptr());
@@ -279,25 +288,21 @@ impl VectorizedEnvZeroCopy {
 
                 unsafe {
                     let obs_p1 =
-                        std::slice::from_raw_parts_mut(obs_ptr.as_ptr().add(p1_obs_start), obs_dim);
+                        std::slice::from_raw_parts_mut(obs_ptr.ptr().add(p1_obs_start), obs_dim);
                     let obs_p2 =
-                        std::slice::from_raw_parts_mut(obs_ptr.as_ptr().add(p2_obs_start), obs_dim);
-                    let mask_p1 = std::slice::from_raw_parts_mut(
-                        mask_ptr.as_ptr().add(p1_mask_start),
-                        act_dim,
-                    );
-                    let mask_p2 = std::slice::from_raw_parts_mut(
-                        mask_ptr.as_ptr().add(p2_mask_start),
-                        act_dim,
-                    );
+                        std::slice::from_raw_parts_mut(obs_ptr.ptr().add(p2_obs_start), obs_dim);
+                    let mask_p1 =
+                        std::slice::from_raw_parts_mut(mask_ptr.ptr().add(p1_mask_start), act_dim);
+                    let mask_p2 =
+                        std::slice::from_raw_parts_mut(mask_ptr.ptr().add(p2_mask_start), act_dim);
 
                     let (r1, r2, done, info) =
                         env.step_into(a1, a2, obs_p1, obs_p2, mask_p1, mask_p2);
 
-                    *reward_ptr.as_ptr().add(i) = r1;
-                    *reward_ptr.as_ptr().add(n + i) = r2;
-                    *done_ptr.as_ptr().add(i) = done;
-                    *info_ptr.as_ptr().add(i) = info;
+                    *reward_ptr.ptr().add(i) = r1;
+                    *reward_ptr.ptr().add(n + i) = r2;
+                    *done_ptr.ptr().add(i) = done;
+                    *info_ptr.ptr().add(i) = info;
 
                     if done {
                         env.reset_into(obs_p1, obs_p2, mask_p1, mask_p2);
@@ -332,7 +337,7 @@ impl VectorizedEnvZeroCopy {
             py_info_list.append(py_dict).unwrap();
         }
 
-        (py_obs, py_reward, py_done, py_mask, py_info_list)
+        Ok((py_obs, py_reward, py_done, py_mask, py_info_list))
     }
 
     fn obs_dim(&self) -> usize {
@@ -405,13 +410,13 @@ impl VectorizedEnvGeneric {
 
             unsafe {
                 let obs_p1 =
-                    std::slice::from_raw_parts_mut(obs_ptr.as_ptr().add(p1_obs_start), obs_dim);
+                    std::slice::from_raw_parts_mut(obs_ptr.ptr().add(p1_obs_start), obs_dim);
                 let obs_p2 =
-                    std::slice::from_raw_parts_mut(obs_ptr.as_ptr().add(p2_obs_start), obs_dim);
+                    std::slice::from_raw_parts_mut(obs_ptr.ptr().add(p2_obs_start), obs_dim);
                 let mask_p1 =
-                    std::slice::from_raw_parts_mut(mask_ptr.as_ptr().add(p1_mask_start), act_dim);
+                    std::slice::from_raw_parts_mut(mask_ptr.ptr().add(p1_mask_start), act_dim);
                 let mask_p2 =
-                    std::slice::from_raw_parts_mut(mask_ptr.as_ptr().add(p2_mask_start), act_dim);
+                    std::slice::from_raw_parts_mut(mask_ptr.ptr().add(p2_mask_start), act_dim);
 
                 env.reset_into(obs_p1, obs_p2, mask_p1, mask_p2);
             }
@@ -432,19 +437,12 @@ impl VectorizedEnvGeneric {
         py: Python<'py>,
         actions_p1: Vec<usize>,
         actions_p2: Vec<usize>,
-    ) -> (
-        Bound<'py, PyArray2<f32>>,
-        Bound<'py, PyArray1<f32>>,
-        Bound<'py, PyArray1<bool>>,
-        Bound<'py, PyArray2<f32>>,
-        Bound<'py, PyList>,
-    ) {
+    ) -> PyStepResult<'py> {
         let n = self.envs.len();
         let obs_dim = self.obs_dim;
         let act_dim = self.action_dim;
 
-        assert_eq!(actions_p1.len(), n);
-        assert_eq!(actions_p2.len(), n);
+        validate_action_batch_lengths(&actions_p1, &actions_p2, n)?;
 
         let obs_ptr = SendPtr::new(self.obs_buffer.as_mut_ptr());
         let mask_ptr = SendPtr::new(self.mask_buffer.as_mut_ptr());
@@ -464,25 +462,21 @@ impl VectorizedEnvGeneric {
 
                 unsafe {
                     let obs_p1 =
-                        std::slice::from_raw_parts_mut(obs_ptr.as_ptr().add(p1_obs_start), obs_dim);
+                        std::slice::from_raw_parts_mut(obs_ptr.ptr().add(p1_obs_start), obs_dim);
                     let obs_p2 =
-                        std::slice::from_raw_parts_mut(obs_ptr.as_ptr().add(p2_obs_start), obs_dim);
-                    let mask_p1 = std::slice::from_raw_parts_mut(
-                        mask_ptr.as_ptr().add(p1_mask_start),
-                        act_dim,
-                    );
-                    let mask_p2 = std::slice::from_raw_parts_mut(
-                        mask_ptr.as_ptr().add(p2_mask_start),
-                        act_dim,
-                    );
+                        std::slice::from_raw_parts_mut(obs_ptr.ptr().add(p2_obs_start), obs_dim);
+                    let mask_p1 =
+                        std::slice::from_raw_parts_mut(mask_ptr.ptr().add(p1_mask_start), act_dim);
+                    let mask_p2 =
+                        std::slice::from_raw_parts_mut(mask_ptr.ptr().add(p2_mask_start), act_dim);
 
                     let (r1, r2, done, info) =
                         env.step_into(a1, a2, obs_p1, obs_p2, mask_p1, mask_p2);
 
-                    *reward_ptr.as_ptr().add(i) = r1;
-                    *reward_ptr.as_ptr().add(n + i) = r2;
-                    *done_ptr.as_ptr().add(i) = done;
-                    *info_ptr.as_ptr().add(i) = info;
+                    *reward_ptr.ptr().add(i) = r1;
+                    *reward_ptr.ptr().add(n + i) = r2;
+                    *done_ptr.ptr().add(i) = done;
+                    *info_ptr.ptr().add(i) = info;
 
                     if done {
                         env.reset_into(obs_p1, obs_p2, mask_p1, mask_p2);
@@ -515,7 +509,7 @@ impl VectorizedEnvGeneric {
             py_info_list.append(py_dict).unwrap();
         }
 
-        (py_obs, py_reward, py_done, py_mask, py_info_list)
+        Ok((py_obs, py_reward, py_done, py_mask, py_info_list))
     }
 
     fn obs_dim(&self) -> usize {

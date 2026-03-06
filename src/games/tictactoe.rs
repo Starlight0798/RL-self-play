@@ -230,15 +230,27 @@ impl GameEnvZeroCopy for TicTacToe {
                 if winner == 1 {
                     r1 = 1.0;
                     r2 = -1.0;
-                    info = GameInfo::terminal(true, false, false, 0, 0, 0, 0, self.step_count);
+                    info = GameInfo::terminal(TerminalStats {
+                        p1_win: true,
+                        steps: self.step_count,
+                        ..Default::default()
+                    });
                 } else {
                     r1 = -1.0;
                     r2 = 1.0;
-                    info = GameInfo::terminal(false, true, false, 0, 0, 0, 0, self.step_count);
+                    info = GameInfo::terminal(TerminalStats {
+                        p2_win: true,
+                        steps: self.step_count,
+                        ..Default::default()
+                    });
                 }
             } else if self.is_board_full() {
                 done = true;
-                info = GameInfo::terminal(false, false, true, 0, 0, 0, 0, self.step_count);
+                info = GameInfo::terminal(TerminalStats {
+                    draw: true,
+                    steps: self.step_count,
+                    ..Default::default()
+                });
             }
 
             self.current_player = -self.current_player;

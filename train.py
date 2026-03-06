@@ -1,14 +1,15 @@
-import torch
-import numpy as np
-import time
-import os
 import argparse
+import os
+import time
 from pathlib import Path
 from collections import deque
 
+import numpy as np
+import torch
+
 from config import Config, FastConfig, LongConfig
 from envs import create_env, get_game_info
-from algorithms.registry import get_algorithm
+from algorithms.registry import build_algorithm
 from agents.rule_based import RuleBasedAgent
 from utils import render_ascii_game_to_file
 
@@ -33,13 +34,17 @@ def train(args, config=None):
     # 初始化算法
     from algorithms.base import BaseAlgorithm
 
-    algo: BaseAlgorithm = get_algorithm(
+    algo: BaseAlgorithm = build_algorithm(
         args.algorithm,
         config=config,
         obs_dim=obs_dim,
         action_dim=action_dim,
         model_name=model_name,
     )
+
+    if args.resume:
+        algo.load(args.resume)
+        print(f"Resumed from {args.resume}")
 
     # 初始化规则模型 (仅用于 simple_duel 评估)
     rule_agent = None
@@ -74,7 +79,7 @@ def train(args, config=None):
     }
 
     print("=" * 60)
-    print("  PPO Self-Play Training")
+    print(f"  {args.algorithm.upper()} Self-Play Training")
     print("=" * 60)
     print(f"  Game: {args.game} | Algorithm: {args.algorithm}")
     print(f"  Model: {model_name}")
@@ -308,12 +313,6 @@ def main():
 
     # 训练
     agent = train(args, config)
-
-    # 如果指定了恢复
-    if args.resume and agent:
-        agent.load(args.resume)
-        print(f"Resumed from {args.resume}")
-
 
 if __name__ == "__main__":
     main()

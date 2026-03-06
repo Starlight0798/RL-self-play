@@ -1,7 +1,7 @@
 use crate::traits::*;
 use crate::{
-    Connect4, Reversi, SimpleDuel, TicTacToe, ACTION_DIM, CONNECT4_ACTION_DIM, CONNECT4_OBS_DIM,
-    OBS_DIM, REVERSI_ACTION_DIM, REVERSI_OBS_DIM, TICTACTOE_ACTION_DIM, TICTACTOE_OBS_DIM,
+    ACTION_DIM, CONNECT4_ACTION_DIM, CONNECT4_OBS_DIM, Connect4, OBS_DIM, REVERSI_ACTION_DIM,
+    REVERSI_OBS_DIM, Reversi, SimpleDuel, TICTACTOE_ACTION_DIM, TICTACTOE_OBS_DIM, TicTacToe,
 };
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -61,7 +61,7 @@ pub enum GameEnvDispatch {
 
 #[allow(dead_code)]
 impl GameEnvDispatch {
-    pub fn reset(&mut self) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
+    pub fn reset(&mut self) -> GameReset {
         match self {
             GameEnvDispatch::SimpleDuel(env) => env.reset(),
             GameEnvDispatch::TicTacToe(env) => env.reset(),
@@ -70,20 +70,7 @@ impl GameEnvDispatch {
         }
     }
 
-    pub fn step(
-        &mut self,
-        action_p1: usize,
-        action_p2: usize,
-    ) -> (
-        Vec<f32>,
-        Vec<f32>,
-        f32,
-        f32,
-        bool,
-        Vec<f32>,
-        Vec<f32>,
-        HashMap<String, f32>,
-    ) {
+    pub fn step(&mut self, action_p1: usize, action_p2: usize) -> GameStep {
         match self {
             GameEnvDispatch::SimpleDuel(env) => env.step(action_p1, action_p2),
             GameEnvDispatch::TicTacToe(env) => env.step(action_p1, action_p2),

@@ -20,10 +20,11 @@
 """
 
 import argparse
-import torch
 import os
 
-from algorithms.registry import list_algorithms, get_algorithm
+import torch
+
+from algorithms.registry import build_algorithm, list_algorithms
 from envs import list_games, get_game_info
 from agents.registry import get_rule_agent
 from config import Config
@@ -93,7 +94,7 @@ def main():
             return get_rule_agent(args.game, device=str(device))
         else:
             model_name = "actor_critic" if args.game == "simple_duel" else "simple_mlp"
-            agent = get_algorithm(
+            agent = build_algorithm(
                 args.algorithm,
                 config=config,
                 obs_dim=obs_dim,

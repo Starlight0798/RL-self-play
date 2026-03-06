@@ -14,16 +14,22 @@ For each combination:
 6. Run 1 update step
 """
 
-import sys
 import traceback
 from dataclasses import dataclass
 from typing import Optional
 
+import pytest
 import torch
 
 from config import Config
-from envs import create_env, get_game_info
-from algorithms.registry import get_algorithm
+from envs import create_env, get_game_info, has_native_backend
+from algorithms.registry import build_algorithm
+
+
+if not has_native_backend():
+    pytestmark = pytest.mark.skip(
+        reason="Rust extension `high_perf_env` is not built; run `maturin develop --release`."
+    )
 
 
 @dataclass
@@ -36,6 +42,9 @@ class TestResult:
     error: Optional[str] = None
 
 
+TestResult.__test__ = False
+
+
 def select_model(game: str) -> str:
     """Select appropriate model for the game."""
     if game == "simple_duel":
@@ -43,7 +52,7 @@ def select_model(game: str) -> str:
     return "simple_mlp"
 
 
-def test_combination(game: str, algo_name: str) -> TestResult:
+def run_combination(game: str, algo_name: str) -> TestResult:
     """Test a single game-algorithm combination.
 
     Args:
@@ -74,31 +83,21 @@ def test_combination(game: str, algo_name: str) -> TestResult:
         config.minibatch_size = 4
         config.device = torch.device("cpu")  # Use CPU for testing
 
-        # Different algorithms have different initialization patterns
-        if algo_name == "ppo":
-            algo = get_algorithm(
-                algo_name,
-                config=config,
-                obs_dim=obs_dim,
-                action_dim=action_dim,
-                model_name=model_name,
-            )
-        else:
-            # DQN and SAC don't use model_name, they have their own networks
-            algo = get_algorithm(
-                algo_name,
-                obs_dim=obs_dim,
-                action_dim=action_dim,
-                device="cpu",
-                config=config,
-            )
+        algo = build_algorithm(
+            algo_name,
+            config=config,
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            model_name=model_name,
+            device="cpu",
+        )
 
         # 5. Run 2 steps of interaction
         obs, mask = env.reset()
         obs = torch.FloatTensor(obs)
         mask = torch.FloatTensor(mask)
 
-        for step in range(2):
+        for _ in range(2):
             # Get action
             action, info = algo.get_action(obs, mask, deterministic=False)
 
@@ -148,7 +147,7 @@ def test_combination(game: str, algo_name: str) -> TestResult:
             mask = mask_new
 
         # 6. Run 1 update step
-        metrics = algo.update(next_obs=obs)
+        algo.update(next_obs=obs)
 
         return TestResult(game=game, algorithm=algo_name, success=True)
 
@@ -178,7 +177,7 @@ def main():
     for game in games:
         for algo in algorithms:
             print(f"Testing {game} + {algo}...", end=" ", flush=True)
-            result = test_combination(game, algo)
+            result = run_combination(game, algo)
             results.append(result)
 
             if result.success:
@@ -223,7 +222,7 @@ def main():
                         print(f"    {line}")
 
     # Exit with appropriate code
-    sys.exit(0 if failed == 0 else 1)
+    raise SystemExit(0 if failed == 0 else 1)
 
 
 if __name__ == "__main__":

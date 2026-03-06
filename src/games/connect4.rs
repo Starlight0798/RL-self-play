@@ -126,8 +126,8 @@ impl Connect4 {
     }
 
     fn get_mask_into(&self, mask: &mut [f32]) {
-        for col in 0..CONNECT4_COLS {
-            mask[col] = if self.is_valid_column(col) { 1.0 } else { 0.0 };
+        for (col, slot) in mask.iter_mut().enumerate().take(CONNECT4_COLS) {
+            *slot = if self.is_valid_column(col) { 1.0 } else { 0.0 };
         }
     }
 }
@@ -281,15 +281,27 @@ impl GameEnvZeroCopy for Connect4 {
                 if self.current_player == 1 {
                     r1 = 1.0;
                     r2 = -1.0;
-                    info = GameInfo::terminal(true, false, false, 0, 0, 0, 0, self.step_count);
+                    info = GameInfo::terminal(TerminalStats {
+                        p1_win: true,
+                        steps: self.step_count,
+                        ..Default::default()
+                    });
                 } else {
                     r1 = -1.0;
                     r2 = 1.0;
-                    info = GameInfo::terminal(false, true, false, 0, 0, 0, 0, self.step_count);
+                    info = GameInfo::terminal(TerminalStats {
+                        p2_win: true,
+                        steps: self.step_count,
+                        ..Default::default()
+                    });
                 }
             } else if self.is_board_full() {
                 done = true;
-                info = GameInfo::terminal(false, false, true, 0, 0, 0, 0, self.step_count);
+                info = GameInfo::terminal(TerminalStats {
+                    draw: true,
+                    steps: self.step_count,
+                    ..Default::default()
+                });
             }
 
             self.current_player = -self.current_player;

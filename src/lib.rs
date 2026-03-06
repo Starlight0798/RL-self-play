@@ -20,7 +20,9 @@ fn create_env(game_name: &str, num_envs: usize) -> PyResult<VectorizedEnvGeneric
 
 #[pyfunction]
 fn list_games() -> Vec<&'static str> {
-    GAME_REGISTRY.keys().cloned().collect()
+    let mut games: Vec<_> = GAME_REGISTRY.keys().cloned().collect();
+    games.sort_unstable();
+    games
 }
 
 #[pyfunction]
